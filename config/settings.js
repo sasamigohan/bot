@@ -1,0 +1,21 @@
+module.exports = {
+    DAILY_REMINDER_HOUR_JST: 21,
+    DAILY_REMINDER_MINUTE_JST: 0,
+
+    // デイリールーレット催促を送るチャンネルID
+    DAILY_REMINDER_CHANNEL_ID: "1505951422951194695",
+
+    // レベルアップ通知チャンネル。空なら発生元チャンネルに送る
+    LEVEL_ANNOUNCE_CHANNEL_ID: "",
+
+    MESSAGE_POINT: 0.1,
+    REACTION_POINT: 0.1,
+
+    VC_POINT_PER_MINUTE: 1,
+
+    GIVE_FEE_RATE: 0.05,
+
+    BOMB_CHANCE: 0.05,
+
+    WORK_CHECK_RESET_MINUTES: 60
+};

@@ -6,96 +6,145 @@ const {
     SlashCommandBuilder,
     REST,
     Routes,
-    PermissionsBitField
+    PermissionsBitField,
+    Partials
 } = require('discord.js');
 
 const {
     loadData,
     saveData,
-    ensureUser
+    ensureUser,
+    addPoints
 } = require('./utils/dataManager');
 
-const checkLevelUp =
-    require('./utils/levelManager');
+const checkLevelUp = require('./utils/levelManager');
 
-const shop =
-    require('./config/shop');
-
-const gacha =
-    require('./config/gacha');
-
-// ===== CLIENT =====
+const shop = require('./config/shop');
+const gacha = require('./config/gacha');
+const settings = require('./config/settings');
 
 const client = new Client({
-
     intents: [
-
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildVoiceStates,
-        GatewayIntentBits.GuildMembers
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMessageReactions
+    ],
+    partials: [
+        Partials.Message,
+        Partials.Channel,
+        Partials.Reaction
     ]
 });
 
-// ===== ROLE COLOR =====
-
 const ROLE_MAP = {
-
-    "1365915285613182977":
-        "1505148838346887228",
-
-    "1225420846475247726":
-        "1505150004627505283",
-
-    "1003612342027833375":
-        "1505149957215358996",
-
-    "1029730900507906088":
-        "1505150121468366978",
-
-    "1476162901059305472":
-        "1505149923677573190",
-
-    "834745010900566046":
-        "1505149190160912455",
-
-    "1462957880943575111":
-        "1505149344980930750",
-
-    "260269196724797451":
-        "1505150679906254961",
-
-    "637474054927941643":
-        "1505150622108876880",
-
-    "718082438953173062":
-        "1505839509500198942",
-
-    "1351184608850612324":
-        "1505150031915913246"
+    "1365915285613182977": "1505148838346887228",
+    "1225420846475247726": "1505150004627505283",
+    "1003612342027833375": "1505149957215358996",
+    "1029730900507906088": "1505150121468366978",
+    "1476162901059305472": "1505149923677573190",
+    "834745010900566046": "1505149190160912455",
+    "1462957880943575111": "1505149344980930750",
+    "260269196724797451": "1505150679906254961",
+    "637474054927941643": "1505150622108876880",
+    "718082438953173062": "1505839509500198942",
+    "1351184608850612324": "1505150031915913246"
 };
-
-// ===== BOMB =====
 
 const explosionGif =
     "https://media.tenor.com/x8v1oNUOmg4AAAAd/explosion-anime.gif";
 
-const timeoutList =
-    [5, 10, 15, 30, 60];
+const timeoutList = [5, 10, 15, 30, 60];
 
-const bombChance = 0.05;
+function getJstDateString() {
+    const now = new Date();
+    const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+    return jst.toISOString().slice(0, 10);
+}
 
-// ===== VC =====
+function getJstHourMinute() {
+    const now = new Date();
+    const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
 
-const VC_MINUTES = 10;
+    return {
+        hour: jst.getUTCHours(),
+        minute: jst.getUTCMinutes()
+    };
+}
 
-const VC_POINTS = 10;
+function rollDailyRoulette() {
+    const table = [
+        { chance: 0.5, points: 100 },
+        { chance: 4.5, points: 75 },
+        { chance: 5, points: 50 },
+        { chance: 10, points: 35 },
+        { chance: 10, points: 30 },
+        { chance: 10, points: 25 },
+        { chance: 20, points: 20 },
+        { chance: 40, points: 10 }
+    ];
 
-// ===== COMMANDS =====
+    const roll = Math.random() * 100;
+    let total = 0;
+
+    for (const item of table) {
+        total += item.chance;
+
+        if (roll < total) {
+            return item.points;
+        }
+    }
+
+    return 10;
+}
+
+function getVcDecayMultiplier(minutes) {
+    const hour = Math.floor(minutes / 60);
+
+    if (hour <= 0) return 1.0;
+    if (hour === 1) return 0.9;
+    if (hour === 2) return 0.8;
+    if (hour === 3) return 0.7;
+    if (hour === 4) return 0.6;
+
+    return 0.5;
+}
+
+async function announceLevelUp(guild, member, result, fallbackChannel = null) {
+    if (!result.leveledUp) return;
+
+    let channel = fallbackChannel;
+
+    if (settings.LEVEL_ANNOUNCE_CHANNEL_ID) {
+        try {
+            channel = await guild.channels.fetch(settings.LEVEL_ANNOUNCE_CHANNEL_ID);
+        } catch {}
+    }
+
+    if (!channel || !channel.send) return;
+
+    await channel.send(
+        `🎉 <@${member.id}> が Lv.${result.newLevel} にレベルアップしました！`
+    );
+}
+
+async function addEarnedPointsAndCheckLevel({
+    guild,
+    member,
+    data,
+    amount,
+    fallbackChannel = null
+}) {
+    addPoints(data, member.id, amount, { addToLevel: true });
+
+    const result = await checkLevelUp(member, data.users[member.id]);
+
+    await announceLevelUp(guild, member, result, fallbackChannel);
+}
 
 const commands = [
-
     new SlashCommandBuilder()
         .setName('balance')
         .setDescription('ポイント確認'),
@@ -123,133 +172,58 @@ const commands = [
         .setDescription('ガチャ'),
 
     new SlashCommandBuilder()
+        .setName('daily')
+        .setDescription('1日1回無料のデイリールーレット'),
+
+    new SlashCommandBuilder()
+        .setName('give')
+        .setDescription('相手にポイントを譲渡')
+        .addUserOption(option =>
+            option
+                .setName('user')
+                .setDescription('譲渡相手')
+                .setRequired(true)
+        )
+        .addNumberOption(option =>
+            option
+                .setName('amount')
+                .setDescription('譲渡ポイント')
+                .setRequired(true)
+        ),
+
+    new SlashCommandBuilder()
+        .setName('workcheck')
+        .setDescription('作業確認をしてVC減衰をリセット'),
+
+    new SlashCommandBuilder()
         .setName('setcolor')
         .setDescription('ロールカラー変更'),
 
     new SlashCommandBuilder()
         .setName('mutebomb')
-        .setDescription('爆弾ON/OFF')
-
-]
-.map(c => c.toJSON());
+        .setDescription('このチャンネルの爆弾ON/OFF')
+].map(c => c.toJSON());
 
 const rest =
     new REST({ version: '10' })
         .setToken(process.env.TOKEN);
 
-// ===== READY =====
+client.once('clientReady', async () => {
+    console.log(`${client.user.tag} 起動`);
 
-client.once(
-    'clientReady',
-    async () => {
+    await rest.put(
+        Routes.applicationCommands(client.user.id),
+        { body: commands }
+    );
 
-        console.log(
-            `${client.user.tag} 起動`
-        );
+    setInterval(handleVoicePoints, 60 * 1000);
+    setInterval(handleDailyReminder, 60 * 1000);
+});
 
-        await rest.put(
-
-            Routes.applicationCommands(
-                client.user.id
-            ),
-
-            { body: commands }
-        );
-    }
-);
-
-// ===== MESSAGE =====
-
-client.on(
-    'messageCreate',
-    async message => {
-
-        if (message.author.bot)
-            return;
-
-        if (!message.guild)
-            return;
-
-        const data = loadData();
-
-        ensureUser(
-            data,
-            message.author.id
-        );
-
-        // ===== POINT =====
-
-        data.users[
-            message.author.id
-        ].points += 0.1;
-
-        // ===== LEVEL =====
-
-        const member =
-            await message.guild.members.fetch(
-                message.author.id
-            );
-
-        await checkLevelUp(
-            member,
-            data.users[message.author.id]
-        );
-
-        // ===== BOMB =====
-
-        if (
-            !data.mutedBombChannels.includes(
-                message.channel.id
-            )
-        ) {
-
-            if (
-                Math.random()
-                <= bombChance
-            ) {
-
-                try {
-
-                    const seconds =
-                        timeoutList[
-                            Math.floor(
-                                Math.random()
-                                * timeoutList.length
-                            )
-                        ];
-
-                    await message.channel.send(
-
-                        `${explosionGif}\n`
-                        + `💥 <@${message.author.id}> 爆発！\n`
-                        + `${seconds}秒タイムアウト！`
-                    );
-
-                    await member.timeout(
-                        seconds * 1000,
-                        '爆弾'
-                    );
-
-                } catch (err) {
-                    console.error(err);
-                }
-            }
-        }
-
-        saveData(data);
-    }
-);
-
-// ===== VC =====
-
-// ===== VC =====
-
-setInterval(async () => {
-
+async function handleVoicePoints() {
     const data = loadData();
 
     for (const guild of client.guilds.cache.values()) {
-
         await guild.members.fetch();
 
         const voiceMembers =
@@ -259,474 +233,493 @@ setInterval(async () => {
             );
 
         for (const member of voiceMembers.values()) {
-
             ensureUser(data, member.id);
 
-            if (
-                data.users[member.id].voiceMinutes === undefined
-            ) {
-                data.users[member.id].voiceMinutes = 0;
+            const user = data.users[member.id];
+
+            const isStreaming = member.voice.streaming;
+            const micOn =
+                !member.voice.selfMute &&
+                !member.voice.serverMute;
+
+            const workCheckedRecently =
+                Date.now() - user.lastWorkCheck <=
+                settings.WORK_CHECK_RESET_MINUTES * 60 * 1000;
+
+            if (isStreaming || micOn || workCheckedRecently) {
+                user.vcSessionMinutes = 0;
+            } else {
+                user.vcSessionMinutes += 1;
             }
 
-            data.users[member.id].voiceMinutes += 1;
+            const multiplier =
+                getVcDecayMultiplier(user.vcSessionMinutes);
 
-            // 10分ごとに10pt
-            if (data.users[member.id].voiceMinutes >= 10) {
+            const gain =
+                settings.VC_POINT_PER_MINUTE * multiplier;
 
-                data.users[member.id].points += 10;
-                data.users[member.id].voiceMinutes = 0;
+            await addEarnedPointsAndCheckLevel({
+                guild,
+                member,
+                data,
+                amount: gain,
+                fallbackChannel: null
+            });
+        }
+    }
 
-                await checkLevelUp(
-                    member,
-                    data.users[member.id]
+    saveData(data);
+}
+
+async function handleDailyReminder() {
+    const { hour, minute } = getJstHourMinute();
+    const today = getJstDateString();
+
+    if (
+        hour !== settings.DAILY_REMINDER_HOUR_JST ||
+        minute !== settings.DAILY_REMINDER_MINUTE_JST
+    ) {
+        return;
+    }
+
+    const data = loadData();
+
+    if (data.dailyReminderSentDate === today) return;
+
+    const channelId = settings.DAILY_REMINDER_CHANNEL_ID;
+    if (!channelId || channelId.includes("ここに")) return;
+
+    let channel;
+
+    try {
+        channel = await client.channels.fetch(channelId);
+    } catch {
+        return;
+    }
+
+    const mentions = [];
+
+    for (const [userId, userData] of Object.entries(data.users)) {
+        if (userData.lastDailyDate !== today) {
+            mentions.push(`<@${userId}>`);
+        }
+    }
+
+    if (mentions.length > 0) {
+        const chunks = [];
+
+        for (let i = 0; i < mentions.length; i += 30) {
+            chunks.push(mentions.slice(i, i + 30));
+        }
+
+        for (const chunk of chunks) {
+            await channel.send(
+                `🎡 デイリールーレットがまだです！ ${chunk.join(' ')}\n` +
+                `/daily で今日の無料ポイントを受け取れます。`
+            );
+        }
+    }
+
+    data.dailyReminderSentDate = today;
+    saveData(data);
+}
+
+client.on('messageCreate', async message => {
+    if (message.author.bot) return;
+    if (!message.guild) return;
+
+    const data = loadData();
+
+    ensureUser(data, message.author.id);
+
+    const member =
+        await message.guild.members.fetch(message.author.id);
+
+    await addEarnedPointsAndCheckLevel({
+        guild: message.guild,
+        member,
+        data,
+        amount: settings.MESSAGE_POINT,
+        fallbackChannel: message.channel
+    });
+
+    if (!data.mutedBombChannels.includes(message.channel.id)) {
+        if (Math.random() <= settings.BOMB_CHANCE) {
+            try {
+                const seconds =
+                    timeoutList[Math.floor(Math.random() * timeoutList.length)];
+
+                await message.channel.send(
+                    `${explosionGif}\n` +
+                    `💥 <@${message.author.id}> 爆発！\n` +
+                    `${seconds}秒タイムアウト！`
                 );
+
+                await member.timeout(seconds * 1000, '爆弾');
+            } catch (err) {
+                console.error(err);
             }
         }
     }
 
     saveData(data);
+});
 
-}, 60 * 1000);
+client.on('messageReactionAdd', async (reaction, user) => {
+    if (user.bot) return;
 
-// ===== INTERACTION =====
+    try {
+        if (reaction.partial) await reaction.fetch();
+    } catch {
+        return;
+    }
 
-client.on(
-    'interactionCreate',
-    async interaction => {
+    const message = reaction.message;
+    if (!message.guild) return;
 
-        if (
-            !interaction.isChatInputCommand()
-        ) return;
+    const data = loadData();
 
-        const data = loadData();
+    const member =
+        await message.guild.members.fetch(user.id);
 
-        const userId =
-            interaction.user.id;
+    await addEarnedPointsAndCheckLevel({
+        guild: message.guild,
+        member,
+        data,
+        amount: settings.REACTION_POINT,
+        fallbackChannel: message.channel
+    });
 
-        ensureUser(data, userId);
+    saveData(data);
+});
 
-        // ===== BALANCE =====
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isChatInputCommand()) return;
 
-        if (
-            interaction.commandName
-            === 'balance'
-        ) {
+    const data = loadData();
+    const userId = interaction.user.id;
 
+    ensureUser(data, userId);
+
+    if (interaction.commandName === 'balance') {
+        const user = data.users[userId];
+
+        return interaction.reply({
+            content:
+                `💰 所持pt: ${user.points.toFixed(1)}pt\n` +
+                `📈 レベル用累計pt: ${user.levelPoints.toFixed(1)}pt\n` +
+                `Lv.${user.level}`
+        });
+    }
+
+    if (interaction.commandName === 'rank') {
+        const ranking =
+            Object.entries(data.users)
+                .sort((a, b) => b[1].points - a[1].points)
+                .slice(0, 10);
+
+        let text = '🏆 所持ポイントランキング\n\n';
+
+        for (let i = 0; i < ranking.length; i++) {
+            const user = await client.users.fetch(ranking[i][0]);
+
+            text +=
+                `${i + 1}. ${user.username} - ` +
+                `${ranking[i][1].points.toFixed(1)}pt\n`;
+        }
+
+        return interaction.reply({ content: text });
+    }
+
+    if (interaction.commandName === 'shop') {
+        let text = '🛒 SHOP\n\n';
+
+        for (const [name, item] of Object.entries(shop)) {
+            text += `${name} : ${item.price}pt\n`;
+        }
+
+        return interaction.reply({ content: text });
+    }
+
+    if (interaction.commandName === 'buy') {
+        const itemName =
+            interaction.options.getString('item');
+
+        const item = shop[itemName];
+
+        if (!item) {
             return interaction.reply({
-
-                content:
-                    `💰 ${data.users[userId].points.toFixed(1)}pt\n`
-                    + `Lv.${data.users[userId].level}`
+                content: '存在しない商品です。',
+                ephemeral: true
             });
         }
 
-        // ===== RANK =====
-
-        if (
-            interaction.commandName
-            === 'rank'
-        ) {
-
-            const ranking =
-                Object.entries(data.users)
-
-                    .sort(
-                        (a, b) =>
-                            b[1].points
-                            - a[1].points
-                    )
-
-                    .slice(0, 10);
-
-            let text =
-                '🏆 ランキング\n\n';
-
-            for (
-                let i = 0;
-                i < ranking.length;
-                i++
-            ) {
-
-                const user =
-                    await client.users.fetch(
-                        ranking[i][0]
-                    );
-
-                text +=
-                    `${i + 1}. `
-                    + `${user.username} - `
-                    + `${ranking[i][1].points.toFixed(1)}pt\n`;
-            }
-
+        if (data.users[userId].points < item.price) {
             return interaction.reply({
-                content: text
+                content: 'ポイント不足です。',
+                ephemeral: true
             });
         }
 
-        // ===== SHOP =====
+        const member =
+            await interaction.guild.members.fetch(userId);
 
-        if (
-            interaction.commandName
-            === 'shop'
-        ) {
+        await member.roles.add(item.roleId);
 
-            let text =
-                '🛒 SHOP\n\n';
+        data.users[userId].points -= item.price;
 
-            for (
-                const [name, item]
-                of Object.entries(shop)
-            ) {
+        saveData(data);
 
-                text +=
-                    `${name} : `
-                    + `${item.price}pt\n`;
-            }
+        if (itemName === 'admin12h') {
+            setTimeout(async () => {
+                try {
+                    await member.roles.remove(item.roleId);
+                } catch {}
+            }, 12 * 60 * 60 * 1000);
+        }
 
+        return interaction.reply({
+            content: '購入成功！'
+        });
+    }
+
+    if (interaction.commandName === 'gacha') {
+        if (data.users[userId].points < gacha.cost) {
             return interaction.reply({
-                content: text
+                content: 'ポイント不足です。',
+                ephemeral: true
             });
         }
 
-        // ===== BUY =====
+        data.users[userId].points -= gacha.cost;
 
-        if (
-            interaction.commandName
-            === 'buy'
-        ) {
+        const roll = Math.random();
 
-            const itemName =
-                interaction.options.getString(
-                    'item'
-                );
+        const member =
+            await interaction.guild.members.fetch(userId);
 
-            const item =
-                shop[itemName];
-
-            if (!item) {
-
-                return interaction.reply({
-
-                    content:
-                        '存在しない商品',
-
-                    ephemeral: true
-                });
-            }
-
-            if (
-                data.users[userId]
-                    .points
-                < item.price
-            ) {
-
-                return interaction.reply({
-
-                    content:
-                        'ポイント不足',
-
-                    ephemeral: true
-                });
-            }
-
-            const member =
-                await interaction.guild.members.fetch(
-                    userId
-                );
-
-            await member.roles.add(
-                item.roleId
-            );
-
-            data.users[userId]
-                .points -= item.price;
-
-            saveData(data);
-
-            // ===== 12H ADMIN =====
-
-            if (
-                itemName === 'admin12h'
-            ) {
-
-                setTimeout(
-                    async () => {
-
-                        try {
-
-                            await member.roles.remove(
-                                item.roleId
-                            );
-
-                        } catch {}
-
-                    },
-
-                    12 * 60 * 60 * 1000
-                );
-            }
-
-            return interaction.reply({
-                content: '購入成功'
-            });
-        }
-
-        // ===== GACHA =====
-
-        if (
-            interaction.commandName
-            === 'gacha'
-        ) {
-
-            if (
-                data.users[userId]
-                    .points
-                < gacha.cost
-            ) {
-
-                return interaction.reply({
-
-                    content:
-                        'ポイント不足',
-
-                    ephemeral: true
-                });
-            }
-
-            data.users[userId]
-                .points -= gacha.cost;
-
-            const roll =
-                Math.random();
-
-            const member =
-                await interaction.guild.members.fetch(
-                    userId
-                );
-
-            // ===== GOLD =====
-
-            if (
-                roll <=
-                gacha.goldenChance
-            ) {
-
-                await member.roles.add(
-                    gacha.goldenRole
-                );
-
-                saveData(data);
-
-                return interaction.reply({
-
-                    content:
-                        '🌟 GOLDEN ROLE獲得！'
-                });
-            }
-
-            // ===== NORMAL =====
-
-            if (
-                roll <=
-                gacha.normalChance
-                + gacha.goldenChance
-            ) {
-
-                const roleId =
-                    gacha.normalRoles[
-                        Math.floor(
-                            Math.random()
-                            * gacha.normalRoles.length
-                        )
-                    ];
-
-                await member.roles.add(
-                    roleId
-                );
-
-                saveData(data);
-
-                return interaction.reply({
-
-                    content:
-                        '🎉 ロール獲得！'
-                });
-            }
+        if (roll <= gacha.goldenChance) {
+            await member.roles.add(gacha.goldenRole);
 
             saveData(data);
 
             return interaction.reply({
-                content:
-                    '😢 ハズレ！'
+                content: '🌟 GOLDEN ROLE獲得！'
             });
         }
 
-        // ===== SETCOLOR =====
-
-        if (
-            interaction.commandName
-            === 'setcolor'
-        ) {
-
+        if (roll <= gacha.normalChance + gacha.goldenChance) {
             const roleId =
-                ROLE_MAP[userId];
-
-            if (!roleId) {
-
-                return interaction.reply({
-
-                    content:
-                        '対応ロールなし',
-
-                    ephemeral: true
-                });
-            }
-
-            if (!data.colorCooldowns) {
-                data.colorCooldowns = {};
-            }
-
-            const now =
-                Date.now();
-
-            const cooldown =
-                24 * 60 * 60 * 1000;
-
-            const last =
-                data.colorCooldowns[
-                    userId
+                gacha.normalRoles[
+                    Math.floor(Math.random() * gacha.normalRoles.length)
                 ];
 
-            if (
-                last &&
-                now - last < cooldown
-            ) {
+            await member.roles.add(roleId);
 
-                return interaction.reply({
+            saveData(data);
 
-                    content:
-                        '1日1回までです',
-
-                    ephemeral: true
-                });
-            }
-
-            const r =
-                Math.floor(
-                    Math.random() * 256
-                );
-
-            const g =
-                Math.floor(
-                    Math.random() * 256
-                );
-
-            const b =
-                Math.floor(
-                    Math.random() * 256
-                );
-
-            const hex =
-                '#'
-                + r.toString(16).padStart(2, '0')
-                + g.toString(16).padStart(2, '0')
-                + b.toString(16).padStart(2, '0');
-
-            try {
-
-                const role =
-                    await interaction.guild.roles.fetch(
-                        roleId
-                    );
-
-                await role.setColor(hex);
-
-                data.colorCooldowns[
-                    userId
-                ] = now;
-
-                saveData(data);
-
-                return interaction.reply({
-
-                    content:
-                        `変更完了\n${hex}`
-                });
-
-            } catch (err) {
-
-                console.error(err);
-
-                return interaction.reply({
-
-                    content:
-                        '変更失敗',
-
-                    ephemeral: true
-                });
-            }
+            return interaction.reply({
+                content: '🎉 ロール獲得！'
+            });
         }
 
-        // ===== MUTEBOMB =====
+        saveData(data);
 
-        if (
-            interaction.commandName
-            === 'mutebomb'
-        ) {
+        return interaction.reply({
+            content: '😢 ハズレ！'
+        });
+    }
 
-            if (
-                !interaction.member.permissions.has(
-                    PermissionsBitField.Flags.Administrator
-                )
-            ) {
+    if (interaction.commandName === 'daily') {
+        const today = getJstDateString();
 
-                return interaction.reply({
+        if (data.users[userId].lastDailyDate === today) {
+            return interaction.reply({
+                content: '今日はすでにデイリールーレットを使用済みです。',
+                ephemeral: true
+            });
+        }
 
-                    content:
-                        '管理者専用',
+        const points = rollDailyRoulette();
 
-                    ephemeral: true
-                });
-            }
+        const member =
+            await interaction.guild.members.fetch(userId);
 
-            const channelId =
-                interaction.channel.id;
+        await addEarnedPointsAndCheckLevel({
+            guild: interaction.guild,
+            member,
+            data,
+            amount: points,
+            fallbackChannel: interaction.channel
+        });
 
-            if (
-                data.mutedBombChannels.includes(
-                    channelId
-                )
-            ) {
+        data.users[userId].lastDailyDate = today;
 
-                data.mutedBombChannels =
-                    data.mutedBombChannels.filter(
-                        id => id !== channelId
-                    );
+        saveData(data);
 
-                saveData(data);
+        return interaction.reply({
+            content: `🎡 デイリールーレット結果: ${points}pt 獲得！`
+        });
+    }
 
-                return interaction.reply({
+    if (interaction.commandName === 'give') {
+        const target =
+            interaction.options.getUser('user');
 
-                    content:
-                        '爆弾を有効化'
-                });
+        const amount =
+            interaction.options.getNumber('amount');
 
-            } else {
+        if (target.bot) {
+            return interaction.reply({
+                content: 'Botには譲渡できません。',
+                ephemeral: true
+            });
+        }
 
-                data.mutedBombChannels.push(
-                    channelId
-                );
+        if (target.id === userId) {
+            return interaction.reply({
+                content: '自分には譲渡できません。',
+                ephemeral: true
+            });
+        }
 
-                saveData(data);
+        if (!amount || amount <= 0) {
+            return interaction.reply({
+                content: '1より大きいポイントを指定してください。',
+                ephemeral: true
+            });
+        }
 
-                return interaction.reply({
+        ensureUser(data, target.id);
 
-                    content:
-                        '爆弾を無効化'
-                });
-            }
+        if (data.users[userId].points < amount) {
+            return interaction.reply({
+                content: 'ポイント不足です。',
+                ephemeral: true
+            });
+        }
+
+        const fee = amount * settings.GIVE_FEE_RATE;
+        const received = amount - fee;
+
+        data.users[userId].points -= amount;
+
+        // 譲渡で得たポイントは levelPoints に加算しない
+        addPoints(data, target.id, received, { addToLevel: false });
+
+        saveData(data);
+
+        return interaction.reply({
+            content:
+                `💸 <@${target.id}> に ${received.toFixed(1)}pt 譲渡しました。\n` +
+                `手数料: ${fee.toFixed(1)}pt`
+        });
+    }
+
+    if (interaction.commandName === 'workcheck') {
+        data.users[userId].lastWorkCheck = Date.now();
+        data.users[userId].vcSessionMinutes = 0;
+
+        saveData(data);
+
+        return interaction.reply({
+            content:
+                '✅ 作業確認完了！VC減衰をリセットしました。',
+            ephemeral: true
+        });
+    }
+
+    if (interaction.commandName === 'setcolor') {
+        const roleId = ROLE_MAP[userId];
+
+        if (!roleId) {
+            return interaction.reply({
+                content: '対応ロールがありません。',
+                ephemeral: true
+            });
+        }
+
+        const now = Date.now();
+        const cooldown = 24 * 60 * 60 * 1000;
+
+        const last = data.colorCooldowns[userId];
+
+        if (last && now - last < cooldown) {
+            return interaction.reply({
+                content: '1日1回までです。',
+                ephemeral: true
+            });
+        }
+
+        const r = Math.floor(Math.random() * 256);
+        const g = Math.floor(Math.random() * 256);
+        const b = Math.floor(Math.random() * 256);
+
+        const hex =
+            '#' +
+            r.toString(16).padStart(2, '0') +
+            g.toString(16).padStart(2, '0') +
+            b.toString(16).padStart(2, '0');
+
+        try {
+            const role =
+                await interaction.guild.roles.fetch(roleId);
+
+            await role.setColor(hex);
+
+            data.colorCooldowns[userId] = now;
+
+            saveData(data);
+
+            return interaction.reply({
+                content:
+                    `変更完了！\n` +
+                    `RGB(${r}, ${g}, ${b})\n` +
+                    `${hex}`
+            });
+        } catch (err) {
+            console.error(err);
+
+            return interaction.reply({
+                content: '変更失敗。',
+                ephemeral: true
+            });
         }
     }
-);
+
+    if (interaction.commandName === 'mutebomb') {
+        if (
+            !interaction.member.permissions.has(
+                PermissionsBitField.Flags.Administrator
+            )
+        ) {
+            return interaction.reply({
+                content: '管理者専用です。',
+                ephemeral: true
+            });
+        }
+
+        const channelId = interaction.channel.id;
+
+        if (data.mutedBombChannels.includes(channelId)) {
+            data.mutedBombChannels =
+                data.mutedBombChannels.filter(id => id !== channelId);
+
+            saveData(data);
+
+            return interaction.reply({
+                content: '爆弾を有効化しました。'
+            });
+        }
+
+        data.mutedBombChannels.push(channelId);
+
+        saveData(data);
+
+        return interaction.reply({
+            content: '爆弾を無効化しました。'
+        });
+    }
+});
 
 client.login(process.env.TOKEN);
