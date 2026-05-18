@@ -19,7 +19,7 @@ const {
 } = require('./utils/dataManager');
 
 const checkLevelUp = require('./utils/levelManager');
-
+const ADMIN_USER_ID = "961521384264175626";
 const shop = require('./config/shop');
 const gacha = require('./config/gacha');
 const settings = require('./config/settings');
