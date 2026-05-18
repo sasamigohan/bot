@@ -11,6 +11,7 @@ const {
 } = require('discord.js');
 
 const {
+    initDataStore,
     loadData,
     saveData,
     ensureUser,
@@ -210,6 +211,8 @@ const rest =
 
 client.once('clientReady', async () => {
     console.log(`${client.user.tag} 起動`);
+
+    await initDataStore();
 
     await rest.put(
         Routes.applicationCommands(client.user.id),

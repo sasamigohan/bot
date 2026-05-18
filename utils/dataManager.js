@@ -1,62 +1,122 @@
 const fs = require('fs');
+const { Pool } = require('pg');
 
 const DATA_FILE = './data.json';
 
-function loadData() {
+const pool = process.env.DATABASE_URL
+    ? new Pool({
+        connectionString: process.env.DATABASE_URL,
+        ssl: {
+            rejectUnauthorized: false
+        }
+    })
+    : null;
 
-    if (!fs.existsSync(DATA_FILE)) {
+let cache = {
+    users: {},
+    mutedBombChannels: [],
+    colorCooldowns: {},
+    dailyReminderSentDate: null
+};
 
-        fs.writeFileSync(
-            DATA_FILE,
-            JSON.stringify({
-                users: {},
-                mutedBombChannels: [],
-                colorCooldowns: {}
-            }, null, 2)
-        );
+function createDefaultData() {
+    return {
+        users: {},
+        mutedBombChannels: [],
+        colorCooldowns: {},
+        dailyReminderSentDate: null
+    };
+}
+
+function normalizeData(data) {
+    if (!data.users) data.users = {};
+    if (!data.mutedBombChannels) data.mutedBombChannels = [];
+    if (!data.colorCooldowns) data.colorCooldowns = {};
+    if (!('dailyReminderSentDate' in data)) data.dailyReminderSentDate = null;
+
+    for (const userId of Object.keys(data.users)) {
+        ensureUser(data, userId);
     }
-
-    const data =
-        JSON.parse(
-            fs.readFileSync(DATA_FILE)
-        );
-
-    if (!data.users)
-        data.users = {};
-
-    if (!data.mutedBombChannels)
-        data.mutedBombChannels = [];
-
-    if (!data.colorCooldowns)
-        data.colorCooldowns = {};
 
     return data;
 }
 
-function loadData() {
-    if (!fs.existsSync(DATA_FILE)) {
-        fs.writeFileSync(DATA_FILE, JSON.stringify(createDefaultData(), null, 2));
+async function initDataStore() {
+    if (!pool) {
+        if (!fs.existsSync(DATA_FILE)) {
+            fs.writeFileSync(
+                DATA_FILE,
+                JSON.stringify(createDefaultData(), null, 2)
+            );
+        }
+
+        cache = normalizeData(
+            JSON.parse(fs.readFileSync(DATA_FILE))
+        );
+
+        return;
     }
 
-    const raw = JSON.parse(fs.readFileSync(DATA_FILE));
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS bot_data (
+            id TEXT PRIMARY KEY,
+            data JSONB NOT NULL
+        )
+    `);
 
-    if (!raw.users) raw.users = {};
-    if (!raw.mutedBombChannels) raw.mutedBombChannels = [];
-    if (!raw.colorCooldowns) raw.colorCooldowns = {};
-    if (!('dailyReminderSentDate' in raw)) raw.dailyReminderSentDate = null;
+    const result = await pool.query(
+        `SELECT data FROM bot_data WHERE id = 'main'`
+    );
 
-    return raw;
+    if (result.rows.length > 0) {
+        cache = normalizeData(result.rows[0].data);
+        return;
+    }
+
+    if (fs.existsSync(DATA_FILE)) {
+        cache = normalizeData(
+            JSON.parse(fs.readFileSync(DATA_FILE))
+        );
+    } else {
+        cache = createDefaultData();
+    }
+
+    await pool.query(
+        `
+        INSERT INTO bot_data (id, data)
+        VALUES ('main', $1)
+        ON CONFLICT (id)
+        DO UPDATE SET data = EXCLUDED.data
+        `,
+        [cache]
+    );
+}
+
+function loadData() {
+    return cache;
 }
 
 function saveData(data) {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+    cache = normalizeData(data);
+
+    if (!pool) {
+        fs.writeFileSync(DATA_FILE, JSON.stringify(cache, null, 2));
+        return;
+    }
+
+    pool.query(
+        `
+        INSERT INTO bot_data (id, data)
+        VALUES ('main', $1)
+        ON CONFLICT (id)
+        DO UPDATE SET data = EXCLUDED.data
+        `,
+        [cache]
+    ).catch(console.error);
 }
 
 function ensureUser(data, userId) {
-
-    if (!data.users) {
-        data.users = {};
-    }
+    if (!data.users) data.users = {};
 
     if (!data.users[userId]) {
         data.users[userId] = {};
@@ -64,31 +124,13 @@ function ensureUser(data, userId) {
 
     const user = data.users[userId];
 
-    // 既存データを消さずに足りないものだけ追加
-
-    if (user.points === undefined)
-        user.points = 0;
-
-    if (user.levelPoints === undefined)
-        user.levelPoints = user.points || 0;
-
-    if (user.level === undefined)
-        user.level = 0;
-
-    if (user.voiceMinutes === undefined)
-        user.voiceMinutes = 0;
-
-    if (user.vcSessionMinutes === undefined)
-        user.vcSessionMinutes = 0;
-
-    if (user.lastWorkCheck === undefined)
-        user.lastWorkCheck = 0;
-
-    if (user.lastDailyDate === undefined)
-        user.lastDailyDate = null;
-
-    if (user.dailyCount === undefined)
-        user.dailyCount = 0;
+    if (user.points === undefined) user.points = 0;
+    if (user.levelPoints === undefined) user.levelPoints = user.points || 0;
+    if (user.level === undefined) user.level = 0;
+    if (user.voiceMinutes === undefined) user.voiceMinutes = 0;
+    if (user.vcSessionMinutes === undefined) user.vcSessionMinutes = 0;
+    if (user.lastWorkCheck === undefined) user.lastWorkCheck = 0;
+    if (user.lastDailyDate === undefined) user.lastDailyDate = null;
 }
 
 function addPoints(data, userId, amount, options = {}) {
@@ -104,6 +146,7 @@ function addPoints(data, userId, amount, options = {}) {
 }
 
 module.exports = {
+    initDataStore,
     loadData,
     saveData,
     ensureUser,
