@@ -168,6 +168,23 @@ const commands = [
                 .setRequired(true)
         ),
 
+    
+    new SlashCommandBuilder()
+    .setName('addpoint')
+    .setDescription('管理者専用：ポイントを追加')
+    .addUserOption(option =>
+        option
+            .setName('user')
+            .setDescription('追加する相手')
+            .setRequired(true)
+    )
+    .addNumberOption(option =>
+        option
+            .setName('amount')
+            .setDescription('追加するポイント')
+            .setRequired(true)
+    ),
+
     new SlashCommandBuilder()
         .setName('gacha')
         .setDescription('ガチャ'),
@@ -403,6 +420,40 @@ client.on('interactionCreate', async interaction => {
     const userId = interaction.user.id;
 
     ensureUser(data, userId);
+    if (interaction.commandName === 'addpoint') {
+
+    if (
+        !interaction.member.permissions.has(
+            PermissionsBitField.Flags.Administrator
+        )
+    ) {
+        return interaction.reply({
+            content: '管理者専用です。',
+            ephemeral: true
+        });
+    }
+
+    const target = interaction.options.getUser('user');
+    const amount = interaction.options.getNumber('amount');
+
+    if (!amount || amount <= 0) {
+        return interaction.reply({
+            content: '1より大きい数値を指定してください。',
+            ephemeral: true
+        });
+    }
+
+    ensureUser(data, target.id);
+
+    // 所持ptだけ増やす。レベル用ptには入れない
+    addPoints(data, target.id, amount, { addToLevel: false });
+
+    saveData(data);
+
+    return interaction.reply({
+        content: `<@${target.id}> に ${amount}pt を追加しました。`
+    });
+}
 
     if (interaction.commandName === 'balance') {
         const user = data.users[userId];
@@ -607,8 +658,12 @@ client.on('interactionCreate', async interaction => {
 
         data.users[userId].points -= amount;
 
-        // 譲渡で得たポイントは levelPoints に加算しない
+        // 相手が受け取るポイント
         addPoints(data, target.id, received, { addToLevel: false });
+
+        // 手数料は管理者へ入る
+        ensureUser(data, ADMIN_USER_ID);
+        addPoints(data, ADMIN_USER_ID, fee, { addToLevel: false });
 
         saveData(data);
 
