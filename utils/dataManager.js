@@ -1,3 +1,7 @@
+const fs = require('fs');
+
+const DATA_FILE = './data.json';
+
 function loadData() {
 
     if (!fs.existsSync(DATA_FILE)) {
