@@ -288,7 +288,6 @@ setInterval(async () => {
 
 }, 60 * 1000);
 
-
 // ===== INTERACTION =====
 
 client.on(
