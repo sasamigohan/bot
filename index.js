@@ -55,7 +55,7 @@ const ROLE_MAP = {
 };
 
 const explosionGif =
-    "https://media.tenor.com/x8v1oNUOmg4AAAAd/explosion-anime.gif";
+    "https://tenor.com/view/cat-explosion-ellie-cat-explosion-cat-explode-meme-nuclear-explosion-nuclear-ellie-gif-11491440842155618054";
 
 const timeoutList = [5, 10, 15, 30, 60];
 
@@ -191,7 +191,7 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('daily')
-        .setDescription('1日1回無料のデイリールーレット'),
+        .setDescription('デイリールーレット'),
 
     new SlashCommandBuilder()
         .setName('give')
@@ -371,8 +371,8 @@ client.on('messageCreate', async message => {
 
                 await message.channel.send(
                     `${explosionGif}\n` +
-                    `💥 <@${message.author.id}> 爆発！\n` +
-                    `${seconds}秒タイムアウト！`
+                    `<@${message.author.id}> じゃ！\n` +
+                    `${seconds}s`
                 );
 
                 await member.timeout(seconds * 1000, '爆弾');
