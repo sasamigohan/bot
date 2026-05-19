@@ -93,7 +93,10 @@ async function initDataStore() {
 }
 
 function loadData() {
+    if (!data.logs) data.logs = [];
+    if (!data.hourlyLogs) data.hourlyLogs = {};
     return cache;
+    
 }
 
 function saveData(data) {
@@ -133,6 +136,87 @@ function ensureUser(data, userId) {
     if (user.lastDailyDate === undefined) user.lastDailyDate = null;
 }
 
+function ensureLogs(data) {
+    if (!data.logs) data.logs = [];
+    if (!data.hourlyLogs) data.hourlyLogs = {};
+}
+
+function trimLogs(data) {
+    ensureLogs(data);
+
+    while (data.logs.length > 100) {
+        data.logs.shift();
+    }
+}
+
+function getJstHourKey(date = new Date()) {
+    const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+    const y = jst.getUTCFullYear();
+    const m = String(jst.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(jst.getUTCDate()).padStart(2, '0');
+    const h = String(jst.getUTCHours()).padStart(2, '0');
+
+    return `${y}-${m}-${d} ${h}:00`;
+}
+
+function addPointLog(data, {
+    userId,
+    type,
+    amount,
+    detail = '',
+    hourly = false
+}) {
+    ensureLogs(data);
+
+    if (hourly) {
+        const hourKey = getJstHourKey();
+        const key = `${hourKey}:${userId}:${type}`;
+
+        if (!data.hourlyLogs[key]) {
+            data.hourlyLogs[key] = {
+                time: hourKey,
+                userId,
+                type,
+                amount: 0
+            };
+        }
+
+        data.hourlyLogs[key].amount += amount;
+
+        const existingIndex = data.logs.findIndex(log =>
+            log.hourlyKey === key
+        );
+
+        const logItem = {
+            hourlyKey: key,
+            time: hourKey,
+            userId,
+            type,
+            amount: data.hourlyLogs[key].amount,
+            detail: `${hourKey}~${String(Number(hourKey.slice(11, 13)) + 1).padStart(2, '0')}:00 ${type}`
+        };
+
+        if (existingIndex >= 0) {
+            data.logs[existingIndex] = logItem;
+        } else {
+            data.logs.push(logItem);
+        }
+
+        trimLogs(data);
+        return;
+    }
+
+    data.logs.push({
+        time: new Date().toISOString(),
+        userId,
+        type,
+        amount,
+        detail
+    });
+
+    trimLogs(data);
+}
+
 function addPoints(data, userId, amount, options = {}) {
     ensureUser(data, userId);
 
@@ -150,5 +234,6 @@ module.exports = {
     loadData,
     saveData,
     ensureUser,
-    addPoints
+    addPoints,
+    addPointLog
 };

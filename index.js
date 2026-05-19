@@ -15,7 +15,8 @@ const {
     loadData,
     saveData,
     ensureUser,
-    addPoints
+    addPoints,
+    addPointLog
 } = require('./utils/dataManager');
 
 const checkLevelUp = require('./utils/levelManager');
@@ -149,6 +150,10 @@ const commands = [
     new SlashCommandBuilder()
         .setName('balance')
         .setDescription('ポイント確認'),
+    
+    new SlashCommandBuilder()
+        .setName('log')
+        .setDescription('直近20件のポイントログを表示'),
 
     new SlashCommandBuilder()
         .setName('rank')
@@ -285,6 +290,12 @@ async function handleVoicePoints() {
                 amount: gain,
                 fallbackChannel: null
             });
+            addPointLog(data, {
+                userId: member.id,
+                type: 'voice',
+                amount: gain,
+                hourly: true
+            });
         }
     }
 
@@ -363,6 +374,13 @@ client.on('messageCreate', async message => {
         fallbackChannel: message.channel
     });
 
+    addPointLog(data, {
+    userId: message.author.id,
+        type: 'message',
+        amount: settings.MESSAGE_POINT,
+        hourly: true
+    });
+
     if (!data.mutedBombChannels.includes(message.channel.id)) {
         if (Math.random() <= settings.BOMB_CHANCE) {
             try {
@@ -410,6 +428,13 @@ client.on('messageReactionAdd', async (reaction, user) => {
         fallbackChannel: message.channel
     });
 
+    addPointLog(data, {
+        userId: user.id,
+        type: 'reaction',
+        amount: settings.REACTION_POINT,
+        hourly: true
+    });
+
     saveData(data);
 });
 
@@ -445,14 +470,72 @@ client.on('interactionCreate', async interaction => {
 
     ensureUser(data, target.id);
 
+    if (interaction.commandName === 'log') {
+    if (!data.logs || data.logs.length === 0) {
+        return interaction.reply({
+            content: 'ログはまだありません。',
+            ephemeral: true
+        });
+    }
+
+    const recentLogs = data.logs.slice(-20).reverse();
+
+    let text = '📜 直近20件のポイントログ\n\n';
+
+    for (const log of recentLogs) {
+        const sign = log.amount >= 0 ? '+' : '';
+        const amountText = `${sign}${Number(log.amount).toFixed(1)}pt`;
+
+        if (log.hourlyKey) {
+            text +=
+                `🕒 ${log.detail} ` +
+                `<@${log.userId}> ${amountText}\n`;
+        } else {
+            const date = new Date(log.time);
+            const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+
+            const time =
+                `${String(jst.getUTCMonth() + 1).padStart(2, '0')}/` +
+                `${String(jst.getUTCDate()).padStart(2, '0')} ` +
+                `${String(jst.getUTCHours()).padStart(2, '0')}:` +
+                `${String(jst.getUTCMinutes()).padStart(2, '0')}`;
+
+            text +=
+                `${time} ` +
+                `<@${log.userId}> ` +
+                `${log.type} ${amountText}`;
+
+            if (log.detail) {
+                text += ` (${log.detail})`;
+            }
+
+            text += '\n';
+        }
+    }
+
+    return interaction.reply({
+        content: text,
+        ephemeral: true
+    });
+}
+
     // 所持ptだけ増やす。レベル用ptには入れない
     addPoints(data, target.id, amount, { addToLevel: false });
+
+    addPointLog(data, {
+        userId: target.id,
+        type: 'addpoint',
+        amount,
+        detail: `by ${userId}`
+    });
 
     saveData(data);
 
     return interaction.reply({
         content: `<@${target.id}> に ${amount}pt を追加しました。`
     });
+
+
 }
 
     if (interaction.commandName === 'balance') {
@@ -532,6 +615,13 @@ client.on('interactionCreate', async interaction => {
             }, 12 * 60 * 60 * 1000);
         }
 
+        addPointLog(data, {
+            userId,
+            type: 'buy',
+            amount: -item.price,
+            detail: itemName
+        });
+
         return interaction.reply({
             content: '購入成功！'
         });
@@ -582,6 +672,12 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply({
             content: '😢 ハズレ！'
         });
+        addPointLog(data, {
+            userId,
+            type: 'gacha',
+            amount: -gacha.cost,
+            detail: 'role gacha'
+});
     }
 
     if (interaction.commandName === 'daily') {
@@ -671,6 +767,26 @@ client.on('interactionCreate', async interaction => {
             content:
                 `💸 <@${target.id}> に ${received.toFixed(1)}pt 譲渡しました。\n` +
                 `手数料: ${fee.toFixed(1)}pt`
+        });
+        addPointLog(data, {
+            userId,
+            type: 'give',
+            amount: -amount,
+            detail: `to ${target.id}`
+        });
+
+        addPointLog(data, {
+            userId: target.id,
+            type: 'receive',
+            amount: received,
+            detail: `from ${userId}`
+        });
+
+        addPointLog(data, {
+            userId: ADMIN_USER_ID,
+            type: 'fee',
+            amount: fee,
+            detail: `from give`
         });
     }
 
