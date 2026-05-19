@@ -93,10 +93,42 @@ async function initDataStore() {
 }
 
 function loadData() {
-    if (!data.logs) data.logs = [];
-    if (!data.hourlyLogs) data.hourlyLogs = {};
-    return cache;
-    
+
+    if (!fs.existsSync(DATA_FILE)) {
+
+        fs.writeFileSync(
+            DATA_FILE,
+            JSON.stringify({
+                users: {},
+                mutedBombChannels: [],
+                colorCooldowns: {},
+                logs: [],
+                hourlyLogs: {}
+            }, null, 2)
+        );
+    }
+
+    const data =
+        JSON.parse(
+            fs.readFileSync(DATA_FILE)
+        );
+
+    if (!data.users)
+        data.users = {};
+
+    if (!data.mutedBombChannels)
+        data.mutedBombChannels = [];
+
+    if (!data.colorCooldowns)
+        data.colorCooldowns = {};
+
+    if (!data.logs)
+        data.logs = [];
+
+    if (!data.hourlyLogs)
+        data.hourlyLogs = {};
+
+    return data;
 }
 
 function saveData(data) {
