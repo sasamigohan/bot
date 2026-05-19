@@ -6,9 +6,7 @@ const DATA_FILE = './data.json';
 const pool = process.env.DATABASE_URL
     ? new Pool({
         connectionString: process.env.DATABASE_URL,
-        ssl: {
-            rejectUnauthorized: false
-        }
+        ssl: { rejectUnauthorized: false }
     })
     : null;
 
@@ -16,7 +14,9 @@ let cache = {
     users: {},
     mutedBombChannels: [],
     colorCooldowns: {},
-    dailyReminderSentDate: null
+    dailyReminderSentDate: null,
+    logs: [],
+    hourlyLogs: {}
 };
 
 function createDefaultData() {
@@ -24,8 +24,25 @@ function createDefaultData() {
         users: {},
         mutedBombChannels: [],
         colorCooldowns: {},
-        dailyReminderSentDate: null
+        dailyReminderSentDate: null,
+        logs: [],
+        hourlyLogs: {}
     };
+}
+
+function ensureUser(data, userId) {
+    if (!data.users) data.users = {};
+    if (!data.users[userId]) data.users[userId] = {};
+
+    const user = data.users[userId];
+
+    if (user.points === undefined) user.points = 0;
+    if (user.levelPoints === undefined) user.levelPoints = user.points || 0;
+    if (user.level === undefined) user.level = 0;
+    if (user.voiceMinutes === undefined) user.voiceMinutes = 0;
+    if (user.vcSessionMinutes === undefined) user.vcSessionMinutes = 0;
+    if (user.lastWorkCheck === undefined) user.lastWorkCheck = 0;
+    if (user.lastDailyDate === undefined) user.lastDailyDate = null;
 }
 
 function normalizeData(data) {
@@ -33,6 +50,8 @@ function normalizeData(data) {
     if (!data.mutedBombChannels) data.mutedBombChannels = [];
     if (!data.colorCooldowns) data.colorCooldowns = {};
     if (!('dailyReminderSentDate' in data)) data.dailyReminderSentDate = null;
+    if (!data.logs) data.logs = [];
+    if (!data.hourlyLogs) data.hourlyLogs = {};
 
     for (const userId of Object.keys(data.users)) {
         ensureUser(data, userId);
@@ -44,16 +63,10 @@ function normalizeData(data) {
 async function initDataStore() {
     if (!pool) {
         if (!fs.existsSync(DATA_FILE)) {
-            fs.writeFileSync(
-                DATA_FILE,
-                JSON.stringify(createDefaultData(), null, 2)
-            );
+            fs.writeFileSync(DATA_FILE, JSON.stringify(createDefaultData(), null, 2));
         }
 
-        cache = normalizeData(
-            JSON.parse(fs.readFileSync(DATA_FILE))
-        );
-
+        cache = normalizeData(JSON.parse(fs.readFileSync(DATA_FILE)));
         return;
     }
 
@@ -74,9 +87,7 @@ async function initDataStore() {
     }
 
     if (fs.existsSync(DATA_FILE)) {
-        cache = normalizeData(
-            JSON.parse(fs.readFileSync(DATA_FILE))
-        );
+        cache = normalizeData(JSON.parse(fs.readFileSync(DATA_FILE)));
     } else {
         cache = createDefaultData();
     }
@@ -93,42 +104,8 @@ async function initDataStore() {
 }
 
 function loadData() {
-
-    if (!fs.existsSync(DATA_FILE)) {
-
-        fs.writeFileSync(
-            DATA_FILE,
-            JSON.stringify({
-                users: {},
-                mutedBombChannels: [],
-                colorCooldowns: {},
-                logs: [],
-                hourlyLogs: {}
-            }, null, 2)
-        );
-    }
-
-    const data =
-        JSON.parse(
-            fs.readFileSync(DATA_FILE)
-        );
-
-    if (!data.users)
-        data.users = {};
-
-    if (!data.mutedBombChannels)
-        data.mutedBombChannels = [];
-
-    if (!data.colorCooldowns)
-        data.colorCooldowns = {};
-
-    if (!data.logs)
-        data.logs = [];
-
-    if (!data.hourlyLogs)
-        data.hourlyLogs = {};
-
-    return data;
+    cache = normalizeData(cache);
+    return cache;
 }
 
 function saveData(data) {
@@ -150,31 +127,20 @@ function saveData(data) {
     ).catch(console.error);
 }
 
-function ensureUser(data, userId) {
-    if (!data.users) data.users = {};
+function addPoints(data, userId, amount, options = {}) {
+    ensureUser(data, userId);
 
-    if (!data.users[userId]) {
-        data.users[userId] = {};
+    const addToLevel = options.addToLevel !== false;
+
+    data.users[userId].points += amount;
+
+    if (addToLevel) {
+        data.users[userId].levelPoints += amount;
     }
-
-    const user = data.users[userId];
-
-    if (user.points === undefined) user.points = 0;
-    if (user.levelPoints === undefined) user.levelPoints = user.points || 0;
-    if (user.level === undefined) user.level = 0;
-    if (user.voiceMinutes === undefined) user.voiceMinutes = 0;
-    if (user.vcSessionMinutes === undefined) user.vcSessionMinutes = 0;
-    if (user.lastWorkCheck === undefined) user.lastWorkCheck = 0;
-    if (user.lastDailyDate === undefined) user.lastDailyDate = null;
-}
-
-function ensureLogs(data) {
-    if (!data.logs) data.logs = [];
-    if (!data.hourlyLogs) data.hourlyLogs = {};
 }
 
 function trimLogs(data) {
-    ensureLogs(data);
+    if (!data.logs) data.logs = [];
 
     while (data.logs.length > 100) {
         data.logs.shift();
@@ -183,12 +149,18 @@ function trimLogs(data) {
 
 function getJstHourKey(date = new Date()) {
     const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+
     const y = jst.getUTCFullYear();
     const m = String(jst.getUTCMonth() + 1).padStart(2, '0');
     const d = String(jst.getUTCDate()).padStart(2, '0');
     const h = String(jst.getUTCHours()).padStart(2, '0');
 
     return `${y}-${m}-${d} ${h}:00`;
+}
+
+function getNextHourText(hourKey) {
+    const h = Number(hourKey.slice(11, 13));
+    return `${String((h + 1) % 24).padStart(2, '0')}:00`;
 }
 
 function addPointLog(data, {
@@ -198,7 +170,7 @@ function addPointLog(data, {
     detail = '',
     hourly = false
 }) {
-    ensureLogs(data);
+    normalizeData(data);
 
     if (hourly) {
         const hourKey = getJstHourKey();
@@ -215,21 +187,19 @@ function addPointLog(data, {
 
         data.hourlyLogs[key].amount += amount;
 
-        const existingIndex = data.logs.findIndex(log =>
-            log.hourlyKey === key
-        );
-
         const logItem = {
             hourlyKey: key,
             time: hourKey,
             userId,
             type,
             amount: data.hourlyLogs[key].amount,
-            detail: `${hourKey}~${String(Number(hourKey.slice(11, 13)) + 1).padStart(2, '0')}:00 ${type}`
+            detail: `${hourKey}~${getNextHourText(hourKey)} ${type}`
         };
 
-        if (existingIndex >= 0) {
-            data.logs[existingIndex] = logItem;
+        const index = data.logs.findIndex(log => log.hourlyKey === key);
+
+        if (index >= 0) {
+            data.logs[index] = logItem;
         } else {
             data.logs.push(logItem);
         }
@@ -247,18 +217,6 @@ function addPointLog(data, {
     });
 
     trimLogs(data);
-}
-
-function addPoints(data, userId, amount, options = {}) {
-    ensureUser(data, userId);
-
-    const addToLevel = options.addToLevel !== false;
-
-    data.users[userId].points += amount;
-
-    if (addToLevel) {
-        data.users[userId].levelPoints += amount;
-    }
 }
 
 module.exports = {

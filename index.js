@@ -20,10 +20,11 @@ const {
 } = require('./utils/dataManager');
 
 const checkLevelUp = require('./utils/levelManager');
-const ADMIN_USER_ID = "961521384264175626";
 const shop = require('./config/shop');
 const gacha = require('./config/gacha');
 const settings = require('./config/settings');
+
+const ADMIN_USER_ID = "961521384264175626";
 
 const client = new Client({
     intents: [
@@ -56,7 +57,7 @@ const ROLE_MAP = {
 };
 
 const explosionGif =
-    "https://tenor.com/view/cat-explosion-ellie-cat-explosion-cat-explode-meme-nuclear-explosion-nuclear-ellie-gif-11491440842155618054";
+    "https://media.tenor.com/x8v1oNUOmg4AAAAd/explosion-anime.gif";
 
 const timeoutList = [5, 10, 15, 30, 60];
 
@@ -93,10 +94,7 @@ function rollDailyRoulette() {
 
     for (const item of table) {
         total += item.chance;
-
-        if (roll < total) {
-            return item.points;
-        }
+        if (roll < total) return item.points;
     }
 
     return 10;
@@ -150,10 +148,6 @@ const commands = [
     new SlashCommandBuilder()
         .setName('balance')
         .setDescription('ポイント確認'),
-    
-    new SlashCommandBuilder()
-        .setName('log')
-        .setDescription('直近20件のポイントログを表示'),
 
     new SlashCommandBuilder()
         .setName('rank')
@@ -173,30 +167,13 @@ const commands = [
                 .setRequired(true)
         ),
 
-    
-    new SlashCommandBuilder()
-    .setName('addpoint')
-    .setDescription('管理者専用：ポイントを追加')
-    .addUserOption(option =>
-        option
-            .setName('user')
-            .setDescription('追加する相手')
-            .setRequired(true)
-    )
-    .addNumberOption(option =>
-        option
-            .setName('amount')
-            .setDescription('追加するポイント')
-            .setRequired(true)
-    ),
-
     new SlashCommandBuilder()
         .setName('gacha')
         .setDescription('ガチャ'),
 
     new SlashCommandBuilder()
         .setName('daily')
-        .setDescription('デイリールーレット'),
+        .setDescription('1日1回無料のデイリールーレット'),
 
     new SlashCommandBuilder()
         .setName('give')
@@ -215,8 +192,28 @@ const commands = [
         ),
 
     new SlashCommandBuilder()
+        .setName('addpoint')
+        .setDescription('管理者専用：ポイントを追加')
+        .addUserOption(option =>
+            option
+                .setName('user')
+                .setDescription('追加する相手')
+                .setRequired(true)
+        )
+        .addNumberOption(option =>
+            option
+                .setName('amount')
+                .setDescription('追加するポイント')
+                .setRequired(true)
+        ),
+
+    new SlashCommandBuilder()
         .setName('workcheck')
         .setDescription('作業確認をしてVC減衰をリセット'),
+
+    new SlashCommandBuilder()
+        .setName('log')
+        .setDescription('直近20件のポイントログを表示'),
 
     new SlashCommandBuilder()
         .setName('setcolor')
@@ -290,6 +287,7 @@ async function handleVoicePoints() {
                 amount: gain,
                 fallbackChannel: null
             });
+
             addPointLog(data, {
                 userId: member.id,
                 type: 'voice',
@@ -337,13 +335,9 @@ async function handleDailyReminder() {
     }
 
     if (mentions.length > 0) {
-        const chunks = [];
-
         for (let i = 0; i < mentions.length; i += 30) {
-            chunks.push(mentions.slice(i, i + 30));
-        }
+            const chunk = mentions.slice(i, i + 30);
 
-        for (const chunk of chunks) {
             await channel.send(
                 `🎡 デイリールーレットがまだです！ ${chunk.join(' ')}\n` +
                 `/daily で今日の無料ポイントを受け取れます。`
@@ -375,7 +369,7 @@ client.on('messageCreate', async message => {
     });
 
     addPointLog(data, {
-    userId: message.author.id,
+        userId: message.author.id,
         type: 'message',
         amount: settings.MESSAGE_POINT,
         hourly: true
@@ -389,8 +383,8 @@ client.on('messageCreate', async message => {
 
                 await message.channel.send(
                     `${explosionGif}\n` +
-                    `<@${message.author.id}> じゃ！\n` +
-                    `${seconds}s`
+                    `💥 <@${message.author.id}> 爆発！\n` +
+                    `${seconds}秒タイムアウト！`
                 );
 
                 await member.timeout(seconds * 1000, '爆弾');
@@ -445,98 +439,62 @@ client.on('interactionCreate', async interaction => {
     const userId = interaction.user.id;
 
     ensureUser(data, userId);
-    if (interaction.commandName === 'addpoint') {
-
-    if (
-        !interaction.member.permissions.has(
-            PermissionsBitField.Flags.Administrator
-        )
-    ) {
-        return interaction.reply({
-            content: '管理者専用です。',
-            ephemeral: true
-        });
-    }
-
-    const target = interaction.options.getUser('user');
-    const amount = interaction.options.getNumber('amount');
-
-    if (!amount || amount <= 0) {
-        return interaction.reply({
-            content: '1より大きい数値を指定してください。',
-            ephemeral: true
-        });
-    }
-
-    ensureUser(data, target.id);
 
     if (interaction.commandName === 'log') {
-    if (!data.logs || data.logs.length === 0) {
-        return interaction.reply({
-            content: 'ログはまだありません。',
-            ephemeral: true
-        });
-    }
+        try {
+            if (!data.logs) data.logs = [];
 
-    const recentLogs = data.logs.slice(-20).reverse();
-
-    let text = '📜 直近20件のポイントログ\n\n';
-
-    for (const log of recentLogs) {
-        const sign = log.amount >= 0 ? '+' : '';
-        const amountText = `${sign}${Number(log.amount).toFixed(1)}pt`;
-
-        if (log.hourlyKey) {
-            text +=
-                `🕒 ${log.detail} ` +
-                `<@${log.userId}> ${amountText}\n`;
-        } else {
-            const date = new Date(log.time);
-            const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
-
-            const time =
-                `${String(jst.getUTCMonth() + 1).padStart(2, '0')}/` +
-                `${String(jst.getUTCDate()).padStart(2, '0')} ` +
-                `${String(jst.getUTCHours()).padStart(2, '0')}:` +
-                `${String(jst.getUTCMinutes()).padStart(2, '0')}`;
-
-            text +=
-                `${time} ` +
-                `<@${log.userId}> ` +
-                `${log.type} ${amountText}`;
-
-            if (log.detail) {
-                text += ` (${log.detail})`;
+            if (data.logs.length === 0) {
+                return interaction.reply({
+                    content: 'ログはまだありません。',
+                    ephemeral: true
+                });
             }
 
-            text += '\n';
+            const recentLogs = data.logs.slice(-20).reverse();
+
+            let text = '📜 直近20件のポイントログ\n\n';
+
+            for (const log of recentLogs) {
+                const amount = Number(log.amount || 0);
+                const sign = amount >= 0 ? '+' : '';
+                const userText = log.userId ? `<@${log.userId}>` : '不明ユーザー';
+
+                if (log.hourlyKey) {
+                    text +=
+                        `🕒 ${log.detail || log.time || '時間不明'} ` +
+                        `${userText} ${sign}${amount.toFixed(1)}pt\n`;
+                } else {
+                    text +=
+                        `${log.type || 'unknown'} ` +
+                        `${userText} ${sign}${amount.toFixed(1)}pt`;
+
+                    if (log.detail) {
+                        text += ` (${log.detail})`;
+                    }
+
+                    text += '\n';
+                }
+            }
+
+            if (text.length > 1900) {
+                text = text.slice(0, 1900) + '\n...';
+            }
+
+            return interaction.reply({
+                content: text,
+                ephemeral: true
+            });
+
+        } catch (err) {
+            console.error(err);
+
+            return interaction.reply({
+                content: 'ログ表示中にエラーが発生しました。',
+                ephemeral: true
+            });
         }
     }
-
-    return interaction.reply({
-        content: text,
-        ephemeral: true
-    });
-}
-
-    // 所持ptだけ増やす。レベル用ptには入れない
-    addPoints(data, target.id, amount, { addToLevel: false });
-
-    addPointLog(data, {
-        userId: target.id,
-        type: 'addpoint',
-        amount,
-        detail: `by ${userId}`
-    });
-
-    saveData(data);
-
-    return interaction.reply({
-        content: `<@${target.id}> に ${amount}pt を追加しました。`
-    });
-
-
-}
 
     if (interaction.commandName === 'balance') {
         const user = data.users[userId];
@@ -605,6 +563,13 @@ client.on('interactionCreate', async interaction => {
 
         data.users[userId].points -= item.price;
 
+        addPointLog(data, {
+            userId,
+            type: 'buy',
+            amount: -item.price,
+            detail: itemName
+        });
+
         saveData(data);
 
         if (itemName === 'admin12h') {
@@ -614,13 +579,6 @@ client.on('interactionCreate', async interaction => {
                 } catch {}
             }, 12 * 60 * 60 * 1000);
         }
-
-        addPointLog(data, {
-            userId,
-            type: 'buy',
-            amount: -item.price,
-            detail: itemName
-        });
 
         return interaction.reply({
             content: '購入成功！'
@@ -636,6 +594,13 @@ client.on('interactionCreate', async interaction => {
         }
 
         data.users[userId].points -= gacha.cost;
+
+        addPointLog(data, {
+            userId,
+            type: 'gacha',
+            amount: -gacha.cost,
+            detail: 'role gacha'
+        });
 
         const roll = Math.random();
 
@@ -672,12 +637,6 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply({
             content: '😢 ハズレ！'
         });
-        addPointLog(data, {
-            userId,
-            type: 'gacha',
-            amount: -gacha.cost,
-            detail: 'role gacha'
-});
     }
 
     if (interaction.commandName === 'daily') {
@@ -704,6 +663,13 @@ client.on('interactionCreate', async interaction => {
         });
 
         data.users[userId].lastDailyDate = today;
+
+        addPointLog(data, {
+            userId,
+            type: 'daily',
+            amount: points,
+            detail: 'daily roulette'
+        });
 
         saveData(data);
 
@@ -741,6 +707,7 @@ client.on('interactionCreate', async interaction => {
         }
 
         ensureUser(data, target.id);
+        ensureUser(data, ADMIN_USER_ID);
 
         if (data.users[userId].points < amount) {
             return interaction.reply({
@@ -754,20 +721,9 @@ client.on('interactionCreate', async interaction => {
 
         data.users[userId].points -= amount;
 
-        // 相手が受け取るポイント
         addPoints(data, target.id, received, { addToLevel: false });
-
-        // 手数料は管理者へ入る
-        ensureUser(data, ADMIN_USER_ID);
         addPoints(data, ADMIN_USER_ID, fee, { addToLevel: false });
 
-        saveData(data);
-
-        return interaction.reply({
-            content:
-                `💸 <@${target.id}> に ${received.toFixed(1)}pt 譲渡しました。\n` +
-                `手数料: ${fee.toFixed(1)}pt`
-        });
         addPointLog(data, {
             userId,
             type: 'give',
@@ -786,7 +742,55 @@ client.on('interactionCreate', async interaction => {
             userId: ADMIN_USER_ID,
             type: 'fee',
             amount: fee,
-            detail: `from give`
+            detail: `from ${userId}`
+        });
+
+        saveData(data);
+
+        return interaction.reply({
+            content:
+                `💸 <@${target.id}> に ${received.toFixed(1)}pt 譲渡しました。\n` +
+                `手数料 ${fee.toFixed(1)}pt は <@${ADMIN_USER_ID}> に送られました。`
+        });
+    }
+
+    if (interaction.commandName === 'addpoint') {
+        if (
+            !interaction.member.permissions.has(
+                PermissionsBitField.Flags.Administrator
+            )
+        ) {
+            return interaction.reply({
+                content: '管理者専用です。',
+                ephemeral: true
+            });
+        }
+
+        const target = interaction.options.getUser('user');
+        const amount = interaction.options.getNumber('amount');
+
+        if (!amount || amount <= 0) {
+            return interaction.reply({
+                content: '1より大きい数値を指定してください。',
+                ephemeral: true
+            });
+        }
+
+        ensureUser(data, target.id);
+
+        addPoints(data, target.id, amount, { addToLevel: false });
+
+        addPointLog(data, {
+            userId: target.id,
+            type: 'addpoint',
+            amount,
+            detail: `by ${userId}`
+        });
+
+        saveData(data);
+
+        return interaction.reply({
+            content: `<@${target.id}> に ${amount}pt を追加しました。`
         });
     }
 
@@ -797,8 +801,7 @@ client.on('interactionCreate', async interaction => {
         saveData(data);
 
         return interaction.reply({
-            content:
-                '✅ 作業確認完了！VC減衰をリセットしました。',
+            content: '✅ 作業確認完了！VC減衰をリセットしました。',
             ephemeral: true
         });
     }
