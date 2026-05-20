@@ -1,21 +1,26 @@
 module.exports = {
     DAILY_REMINDER_HOUR_JST: 21,
     DAILY_REMINDER_MINUTE_JST: 0,
-
-    // デイリールーレット催促を送るチャンネルID
     DAILY_REMINDER_CHANNEL_ID: "1505951422951194695",
-
-    // レベルアップ通知チャンネル。空なら発生元チャンネルに送る
     LEVEL_ANNOUNCE_CHANNEL_ID: "",
 
     MESSAGE_POINT: 0.1,
     REACTION_POINT: 0.1,
-
     VC_POINT_PER_MINUTE: 1,
 
     GIVE_FEE_RATE: 0.05,
-
     BOMB_CHANCE: 0.05,
+    WORK_CHECK_RESET_MINUTES: 60,
 
-    WORK_CHECK_RESET_MINUTES: 60
+    MUTEBOMB_ALLOWED_ROLE_ID: "1494655452573859920",
+
+    DISPLAY_ROLES: {
+        none: null,
+        睡眠は偉業: "1505880504518447206",
+        食事は偉業: "1505880596193480786",
+        ハーブティ提供中: "1505880683573153882",
+        異形は偉業: "1505881047219306517"
+    },
+
+    AUTO_SERVER_MUTE_ON_JOIN: true
 };

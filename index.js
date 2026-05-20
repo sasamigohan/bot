@@ -7,7 +7,10 @@ const {
     REST,
     Routes,
     PermissionsBitField,
-    Partials
+    Partials,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle
 } = require('discord.js');
 
 const {
@@ -57,7 +60,7 @@ const ROLE_MAP = {
 };
 
 const explosionGif =
-    "https://media.tenor.com/x8v1oNUOmg4AAAAd/explosion-anime.gif";
+    "https://tenor.com/view/jpexplosion-gif-5562858";
 
 const timeoutList = [5, 10, 15, 30, 60];
 
@@ -146,6 +149,10 @@ async function addEarnedPointsAndCheckLevel({
 
 const commands = [
     new SlashCommandBuilder()
+        .setName('ping')
+        .setDescription('Botの応答確認'),
+
+    new SlashCommandBuilder()
         .setName('balance')
         .setDescription('ポイント確認'),
 
@@ -170,6 +177,22 @@ const commands = [
     new SlashCommandBuilder()
         .setName('gacha')
         .setDescription('ガチャ'),
+
+    new SlashCommandBuilder()
+        .setName('addticket')
+        .setDescription('管理者専用：ガチャチケットを追加')
+        .addUserOption(option =>
+            option
+                .setName('user')
+                .setDescription('追加する相手')
+                .setRequired(true)
+        )
+        .addIntegerOption(option =>
+            option
+                .setName('amount')
+                .setDescription('追加する枚数')
+                .setRequired(true)
+        ),
 
     new SlashCommandBuilder()
         .setName('daily')
@@ -208,12 +231,85 @@ const commands = [
         ),
 
     new SlashCommandBuilder()
+        .setName('displayrole')
+        .setDescription('表示用ロールを付け替え')
+        .addStringOption(option =>
+            option
+                .setName('role')
+                .setDescription('表示するロール名。noneで解除')
+                .setRequired(true)
+                .addChoices(
+                    { name: 'なし', value: 'none' },
+                    { name: '睡眠は偉業', value: '睡眠は偉業' },
+                    { name: '食事は偉業', value: '食事は偉業' },
+                    { name: 'ハーブティ提供中', value: 'ハーブティ提供中' },
+                    { name: '異形は偉業', value: '異形は偉業' }
+                )
+        ),
+
+    new SlashCommandBuilder()
         .setName('workcheck')
         .setDescription('作業確認をしてVC減衰をリセット'),
 
     new SlashCommandBuilder()
         .setName('log')
         .setDescription('直近20件のポイントログを表示'),
+
+    new SlashCommandBuilder()
+        .setName('doubleup')
+        .setDescription('ポイントを賭けてダブルアップ')
+        .addNumberOption(option =>
+            option
+                .setName('amount')
+                .setDescription('賭けるポイント')
+                .setRequired(true)
+        ),
+
+    new SlashCommandBuilder()
+        .setName('derby_start')
+        .setDescription('500ptを使ってダービーを開始')
+        .addStringOption(option =>
+            option
+                .setName('title')
+                .setDescription('ダービー名')
+                .setRequired(true)
+        ),
+
+    new SlashCommandBuilder()
+        .setName('derby_list')
+        .setDescription('開催中のダービー一覧'),
+
+    new SlashCommandBuilder()
+        .setName('join')
+        .setDescription('開催中のダービーに参加')
+        .addStringOption(option =>
+            option
+                .setName('id')
+                .setDescription('ダービーID')
+                .setRequired(true)
+        )
+        .addNumberOption(option =>
+            option
+                .setName('amount')
+                .setDescription('賭けるポイント')
+                .setRequired(true)
+        ),
+
+    new SlashCommandBuilder()
+        .setName('result')
+        .setDescription('ダービー結果を確定')
+        .addStringOption(option =>
+            option
+                .setName('id')
+                .setDescription('ダービーID')
+                .setRequired(true)
+        )
+        .addStringOption(option =>
+            option
+                .setName('winners')
+                .setDescription('勝者のメンション。勝者なしなら none')
+                .setRequired(true)
+        ),
 
     new SlashCommandBuilder()
         .setName('setcolor')
@@ -328,9 +424,9 @@ async function handleDailyReminder() {
 
     const mentions = [];
 
-    for (const [userId, userData] of Object.entries(data.users)) {
+    for (const [targetUserId, userData] of Object.entries(data.users)) {
         if (userData.lastDailyDate !== today) {
-            mentions.push(`<@${userId}>`);
+            mentions.push(`<@${targetUserId}>`);
         }
     }
 
@@ -348,6 +444,23 @@ async function handleDailyReminder() {
     data.dailyReminderSentDate = today;
     saveData(data);
 }
+
+client.on('voiceStateUpdate', async (oldState, newState) => {
+    if (!settings.AUTO_SERVER_MUTE_ON_JOIN) return;
+
+    if (!oldState.channel && newState.channel) {
+        try {
+            if (newState.member.user.bot) return;
+
+            await newState.setMute(
+                true,
+                'VC入室時の自動サーバーミュート'
+            );
+        } catch (err) {
+            console.error('自動ミュート失敗:', err);
+        }
+    }
+});
 
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
@@ -383,8 +496,8 @@ client.on('messageCreate', async message => {
 
                 await message.channel.send(
                     `${explosionGif}\n` +
-                    `💥 <@${message.author.id}> 爆発！\n` +
-                    `${seconds}秒タイムアウト！`
+                    `<@${message.author.id}>じゃ！ \n` +
+                    `${seconds}.`
                 );
 
                 await member.timeout(seconds * 1000, '爆弾');
@@ -433,12 +546,120 @@ client.on('messageReactionAdd', async (reaction, user) => {
 });
 
 client.on('interactionCreate', async interaction => {
+    if (interaction.isButton()) {
+        const data = loadData();
+
+        const parts = interaction.customId.split('_');
+
+        if (parts[0] !== 'doubleup') return;
+
+        const action = parts[1];
+        const ownerId = parts[2];
+
+        if (interaction.user.id !== ownerId) {
+            return interaction.reply({
+                content: 'これはあなたのダブルアップではありません。',
+                ephemeral: true
+            });
+        }
+
+        ensureUser(data, ownerId);
+
+        const game = data.doubleUps?.[ownerId];
+
+        if (!game || !game.active) {
+            return interaction.reply({
+                content: 'このダブルアップは終了しています。',
+                ephemeral: true
+            });
+        }
+
+        if (action === 'stop') {
+            data.users[ownerId].points += game.current;
+
+            addPointLog(data, {
+                userId: ownerId,
+                type: 'doubleup-cashout',
+                amount: game.current,
+                detail: 'cash out'
+            });
+
+            delete data.doubleUps[ownerId];
+
+            saveData(data);
+
+            return interaction.update({
+                content:
+                    `✅ ダブルアップ終了！\n` +
+                    `${game.current}pt を受け取りました。`,
+                components: []
+            });
+        }
+
+        const answer = Math.random() < 0.5 ? 'A' : 'B';
+
+        if (action === answer) {
+            game.current *= 2;
+
+            saveData(data);
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`doubleup_A_${ownerId}`)
+                    .setLabel('A')
+                    .setStyle(ButtonStyle.Primary),
+
+                new ButtonBuilder()
+                    .setCustomId(`doubleup_B_${ownerId}`)
+                    .setLabel('B')
+                    .setStyle(ButtonStyle.Primary),
+
+                new ButtonBuilder()
+                    .setCustomId(`doubleup_stop_${ownerId}`)
+                    .setLabel('終了して受け取る')
+                    .setStyle(ButtonStyle.Success)
+            );
+
+            return interaction.update({
+                content:
+                    `🎯 正解！答えは ${answer} でした。\n` +
+                    `現在の山分: ${game.current}pt\n` +
+                    `続けますか？`,
+                components: [row]
+            });
+        }
+
+        addPointLog(data, {
+            userId: ownerId,
+            type: 'doubleup-lose',
+            amount: 0,
+            detail: `lost ${game.current}pt`
+        });
+
+        delete data.doubleUps[ownerId];
+
+        saveData(data);
+
+        return interaction.update({
+            content:
+                `💥 失敗！答えは ${answer} でした。\n` +
+                `賭けポイントは失われました。`,
+            components: []
+        });
+    }
+
     if (!interaction.isChatInputCommand()) return;
 
     const data = loadData();
     const userId = interaction.user.id;
 
     ensureUser(data, userId);
+
+    if (interaction.commandName === 'ping') {
+        return interaction.reply({
+            content: `🏓 Pong! ${client.ws.ping}ms`
+        });
+    }
 
     if (interaction.commandName === 'log') {
         try {
@@ -502,6 +723,7 @@ client.on('interactionCreate', async interaction => {
         return interaction.reply({
             content:
                 `💰 所持pt: ${user.points.toFixed(1)}pt\n` +
+                `🎫 ガチャチケット: ${user.tickets || 0}枚\n` +
                 `📈 レベル用累計pt: ${user.levelPoints.toFixed(1)}pt\n` +
                 `Lv.${user.level}`
         });
@@ -530,7 +752,11 @@ client.on('interactionCreate', async interaction => {
         let text = '🛒 SHOP\n\n';
 
         for (const [name, item] of Object.entries(shop)) {
-            text += `${name} : ${item.price}pt\n`;
+            if (item.type === "ticket") {
+                text += `${name} : ${item.price}pt / ${item.amount || 1}枚\n`;
+            } else {
+                text += `${name} : ${item.price}pt\n`;
+            }
         }
 
         return interaction.reply({ content: text });
@@ -553,6 +779,26 @@ client.on('interactionCreate', async interaction => {
             return interaction.reply({
                 content: 'ポイント不足です。',
                 ephemeral: true
+            });
+        }
+
+        if (item.type === "ticket") {
+            data.users[userId].points -= item.price;
+            data.users[userId].tickets += item.amount || 1;
+
+            addPointLog(data, {
+                userId,
+                type: 'buy-ticket',
+                amount: -item.price,
+                detail: `${item.amount || 1} ticket`
+            });
+
+            saveData(data);
+
+            return interaction.reply({
+                content:
+                    `🎫 ガチャチケットを ${item.amount || 1}枚 購入しました。\n` +
+                    `現在の所持チケット: ${data.users[userId].tickets}枚`
             });
         }
 
@@ -586,20 +832,22 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (interaction.commandName === 'gacha') {
-        if (data.users[userId].points < gacha.cost) {
+        if (!data.users[userId].tickets || data.users[userId].tickets <= 0) {
             return interaction.reply({
-                content: 'ポイント不足です。',
+                content:
+                    'ガチャチケットがありません。\n' +
+                    '/shop から gachaTicket を購入してください。',
                 ephemeral: true
             });
         }
 
-        data.users[userId].points -= gacha.cost;
+        data.users[userId].tickets -= 1;
 
         addPointLog(data, {
             userId,
-            type: 'gacha',
-            amount: -gacha.cost,
-            detail: 'role gacha'
+            type: 'gacha-ticket',
+            amount: 0,
+            detail: 'used 1 ticket'
         });
 
         const roll = Math.random();
@@ -639,6 +887,46 @@ client.on('interactionCreate', async interaction => {
         });
     }
 
+    if (interaction.commandName === 'addticket') {
+        if (
+            !interaction.member.permissions.has(
+                PermissionsBitField.Flags.Administrator
+            )
+        ) {
+            return interaction.reply({
+                content: '管理者専用です。',
+                ephemeral: true
+            });
+        }
+
+        const target = interaction.options.getUser('user');
+        const amount = interaction.options.getInteger('amount');
+
+        if (!amount || amount <= 0) {
+            return interaction.reply({
+                content: '1以上の枚数を指定してください。',
+                ephemeral: true
+            });
+        }
+
+        ensureUser(data, target.id);
+
+        data.users[target.id].tickets += amount;
+
+        addPointLog(data, {
+            userId: target.id,
+            type: 'addticket',
+            amount: 0,
+            detail: `+${amount} ticket by ${userId}`
+        });
+
+        saveData(data);
+
+        return interaction.reply({
+            content: `<@${target.id}> にガチャチケットを ${amount}枚 追加しました。`
+        });
+    }
+
     if (interaction.commandName === 'daily') {
         const today = getJstDateString();
 
@@ -674,7 +962,7 @@ client.on('interactionCreate', async interaction => {
         saveData(data);
 
         return interaction.reply({
-            content: `🎡 デイリールーレット結果: ${points}pt 獲得！`
+            content: `デイリールーレット結果: ${points}pt 獲得！`
         });
     }
 
@@ -749,7 +1037,7 @@ client.on('interactionCreate', async interaction => {
 
         return interaction.reply({
             content:
-                `💸 <@${target.id}> に ${received.toFixed(1)}pt 譲渡しました。\n` +
+                `<${target.id}> に ${received.toFixed(1)}pt 譲渡しました。\n` +
                 `手数料 ${fee.toFixed(1)}pt は <@${ADMIN_USER_ID}> に送られました。`
         });
     }
@@ -794,6 +1082,70 @@ client.on('interactionCreate', async interaction => {
         });
     }
 
+    if (interaction.commandName === 'displayrole') {
+        const selected = interaction.options.getString('role');
+
+        if (!settings.DISPLAY_ROLES) {
+            return interaction.reply({
+                content: '表示ロール設定がありません。',
+                ephemeral: true
+            });
+        }
+
+        if (!(selected in settings.DISPLAY_ROLES)) {
+            return interaction.reply({
+                content: '存在しない表示ロールです。',
+                ephemeral: true
+            });
+        }
+
+        const member =
+            await interaction.guild.members.fetch(userId);
+
+        const displayRoleIds =
+            Object.values(settings.DISPLAY_ROLES)
+                .filter(roleId => roleId);
+
+        try {
+            for (const roleId of displayRoleIds) {
+                if (member.roles.cache.has(roleId)) {
+                    await member.roles.remove(roleId);
+                }
+            }
+
+            const newRoleId = settings.DISPLAY_ROLES[selected];
+
+            if (newRoleId) {
+                await member.roles.add(newRoleId);
+            }
+
+            data.users[userId].displayRole = selected;
+
+            saveData(data);
+
+            if (selected === 'none') {
+                return interaction.reply({
+                    content: '表示ロールを解除しました。',
+                    ephemeral: true
+                });
+            }
+
+            return interaction.reply({
+                content: `表示ロールを ${selected} に変更しました。`,
+                ephemeral: true
+            });
+
+        } catch (err) {
+            console.error(err);
+
+            return interaction.reply({
+                content:
+                    '表示ロールの変更に失敗しました。Botのロール位置や権限を確認してください。',
+                ephemeral: true
+            });
+        }
+    }
+
     if (interaction.commandName === 'workcheck') {
         data.users[userId].lastWorkCheck = Date.now();
         data.users[userId].vcSessionMinutes = 0;
@@ -801,8 +1153,304 @@ client.on('interactionCreate', async interaction => {
         saveData(data);
 
         return interaction.reply({
-            content: '✅ 作業確認完了！VC減衰をリセットしました。',
+            content: 'VC減衰をリセットしました。',
             ephemeral: true
+        });
+    }
+
+    if (interaction.commandName === 'doubleup') {
+        const amount = interaction.options.getNumber('amount');
+
+        if (!amount || amount <= 0) {
+            return interaction.reply({
+                content: '1より大きいポイントを指定してください。',
+                ephemeral: true
+            });
+        }
+
+        if (data.users[userId].points < amount) {
+            return interaction.reply({
+                content: 'ポイント不足です。',
+                ephemeral: true
+            });
+        }
+
+        data.users[userId].points -= amount;
+
+        data.doubleUps[userId] = {
+            bet: amount,
+            current: amount,
+            active: true
+        };
+
+        addPointLog(data, {
+            userId,
+            type: 'doubleup-start',
+            amount: -amount,
+            detail: 'doubleup bet'
+        });
+
+        saveData(data);
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`doubleup_A_${userId}`)
+                .setLabel('A')
+                .setStyle(ButtonStyle.Primary),
+
+            new ButtonBuilder()
+                .setCustomId(`doubleup_B_${userId}`)
+                .setLabel('B')
+                .setStyle(ButtonStyle.Primary),
+
+            new ButtonBuilder()
+                .setCustomId(`doubleup_stop_${userId}`)
+                .setLabel('終了して受け取る')
+                .setStyle(ButtonStyle.Success)
+        );
+
+        return interaction.reply({
+            content:
+                `🎲 ダブルアップ開始！\n` +
+                `現在の山分: ${amount}pt\n` +
+                `AかBを選んでください。`,
+            components: [row]
+        });
+    }
+
+    if (interaction.commandName === 'derby_start') {
+        const title = interaction.options.getString('title');
+
+        if (data.users[userId].points < 500) {
+            return interaction.reply({
+                content: 'ダービー開始には500pt必要です。',
+                ephemeral: true
+            });
+        }
+
+        data.users[userId].points -= 500;
+
+        const derbyId = Date.now().toString();
+
+        data.derbies[derbyId] = {
+            id: derbyId,
+            title,
+            ownerId: userId,
+            bank: 500,
+            entries: {
+                [userId]: 500
+            },
+            status: 'open',
+            createdAt: new Date().toISOString()
+        };
+
+        addPointLog(data, {
+            userId,
+            type: 'derby-start',
+            amount: -500,
+            detail: derbyId
+        });
+
+        saveData(data);
+
+        return interaction.reply({
+            content:
+                `🏇 ダービーを開始しました！\n` +
+                `ID: ${derbyId}\n` +
+                `タイトル: ${title}\n` +
+                `/join id:${derbyId} amount:ポイント で参加できます。`
+        });
+    }
+
+    if (interaction.commandName === 'derby_list') {
+        const openDerbies =
+            Object.values(data.derbies)
+                .filter(derby => derby.status === 'open');
+
+        if (openDerbies.length === 0) {
+            return interaction.reply({
+                content: '開催中のダービーはありません。',
+                ephemeral: true
+            });
+        }
+
+        let text = '🏇 開催中のダービー一覧\n\n';
+
+        for (const derby of openDerbies) {
+            text +=
+                `ID: ${derby.id}\n` +
+                `タイトル: ${derby.title}\n` +
+                `主催者: <@${derby.ownerId}>\n` +
+                `バンク: ${Number(derby.bank).toFixed(1)}pt\n\n`;
+        }
+
+        return interaction.reply({
+            content: text
+        });
+    }
+
+    if (interaction.commandName === 'join') {
+        const derbyId = interaction.options.getString('id');
+        const amount = interaction.options.getNumber('amount');
+
+        if (!amount || amount <= 0) {
+            return interaction.reply({
+                content: '1より大きいポイントを指定してください。',
+                ephemeral: true
+            });
+        }
+
+        if (!data.derbies[derbyId]) {
+            return interaction.reply({
+                content: 'そのダービーは存在しません。',
+                ephemeral: true
+            });
+        }
+
+        const derby = data.derbies[derbyId];
+
+        if (derby.status !== 'open') {
+            return interaction.reply({
+                content: 'このダービーは参加受付中ではありません。',
+                ephemeral: true
+            });
+        }
+
+        if (data.users[userId].points < amount) {
+            return interaction.reply({
+                content: 'ポイント不足です。',
+                ephemeral: true
+            });
+        }
+
+        data.users[userId].points -= amount;
+
+        if (!derby.entries[userId]) {
+            derby.entries[userId] = 0;
+        }
+
+        derby.entries[userId] += amount;
+        derby.bank += amount;
+
+        addPointLog(data, {
+            userId,
+            type: 'derby-join',
+            amount: -amount,
+            detail: derbyId
+        });
+
+        saveData(data);
+
+        return interaction.reply({
+            content:
+                `🏇 ${derby.title} に ${amount}pt 賭けました。\n` +
+                `現在のバンク: ${Number(derby.bank).toFixed(1)}pt`
+        });
+    }
+
+    if (interaction.commandName === 'result') {
+        const derbyId = interaction.options.getString('id');
+        const winnersRaw = interaction.options.getString('winners');
+
+        if (!data.derbies[derbyId]) {
+            return interaction.reply({
+                content: 'そのダービーは存在しません。',
+                ephemeral: true
+            });
+        }
+
+        const derby = data.derbies[derbyId];
+
+        const isAdmin =
+            interaction.member.permissions.has(
+                PermissionsBitField.Flags.Administrator
+            );
+
+        if (userId !== derby.ownerId && !isAdmin) {
+            return interaction.reply({
+                content: '結果を確定できるのは主催者または管理者のみです。',
+                ephemeral: true
+            });
+        }
+
+        if (derby.status !== 'open') {
+            return interaction.reply({
+                content: 'このダービーはすでに終了しています。',
+                ephemeral: true
+            });
+        }
+
+        ensureUser(data, derby.ownerId);
+
+        if (winnersRaw.toLowerCase() === 'none') {
+            data.users[derby.ownerId].points += derby.bank;
+
+            addPointLog(data, {
+                userId: derby.ownerId,
+                type: 'derby-no-winner',
+                amount: derby.bank,
+                detail: derbyId
+            });
+
+            derby.status = 'closed';
+
+            saveData(data);
+
+            return interaction.reply({
+                content:
+                    `🏇 ダービー終了！\n` +
+                    `勝者なしのため、バンク ${Number(derby.bank).toFixed(1)}pt は主催者 <@${derby.ownerId}> に渡されました。`
+            });
+        }
+
+        const winnerIds =
+            [...winnersRaw.matchAll(/<@!?(\d+)>/g)]
+                .map(match => match[1]);
+
+        if (winnerIds.length === 0) {
+            return interaction.reply({
+                content: '勝者はメンションで指定してください。勝者なしなら none と入力してください。',
+                ephemeral: true
+            });
+        }
+
+        const fee = derby.bank * 0.05;
+        const prizePool = derby.bank - fee;
+        const prizePerWinner = prizePool / winnerIds.length;
+
+        data.users[derby.ownerId].points += fee;
+
+        addPointLog(data, {
+            userId: derby.ownerId,
+            type: 'derby-fee',
+            amount: fee,
+            detail: derbyId
+        });
+
+        for (const winnerId of winnerIds) {
+            ensureUser(data, winnerId);
+
+            data.users[winnerId].points += prizePerWinner;
+
+            addPointLog(data, {
+                userId: winnerId,
+                type: 'derby-win',
+                amount: prizePerWinner,
+                detail: derbyId
+            });
+        }
+
+        derby.status = 'closed';
+
+        saveData(data);
+
+        return interaction.reply({
+            content:
+                `🏇 ダービー結果確定！\n` +
+                `バンク: ${Number(derby.bank).toFixed(1)}pt\n` +
+                `手数料: ${fee.toFixed(1)}pt → <@${derby.ownerId}>\n` +
+                `賞金: ${prizePerWinner.toFixed(1)}pt × ${winnerIds.length}人\n` +
+                `勝者: ${winnerIds.map(id => `<@${id}>`).join(' ')}`
         });
     }
 
@@ -865,13 +1513,20 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (interaction.commandName === 'mutebomb') {
+        const hasMuteBombRole =
+            settings.MUTEBOMB_ALLOWED_ROLE_ID &&
+            interaction.member.roles.cache.has(
+                settings.MUTEBOMB_ALLOWED_ROLE_ID
+            );
+
         if (
             !interaction.member.permissions.has(
                 PermissionsBitField.Flags.Administrator
-            )
+            ) &&
+            !hasMuteBombRole
         ) {
             return interaction.reply({
-                content: '管理者専用です。',
+                content: '権限がありません',
                 ephemeral: true
             });
         }

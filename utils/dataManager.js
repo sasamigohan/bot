@@ -16,7 +16,9 @@ let cache = {
     colorCooldowns: {},
     dailyReminderSentDate: null,
     logs: [],
-    hourlyLogs: {}
+    hourlyLogs: {},
+    doubleUps: {},
+    derbies: {}
 };
 
 function createDefaultData() {
@@ -26,7 +28,9 @@ function createDefaultData() {
         colorCooldowns: {},
         dailyReminderSentDate: null,
         logs: [],
-        hourlyLogs: {}
+        hourlyLogs: {},
+        doubleUps: {},
+        derbies: {}
     };
 }
 
@@ -43,6 +47,8 @@ function ensureUser(data, userId) {
     if (user.vcSessionMinutes === undefined) user.vcSessionMinutes = 0;
     if (user.lastWorkCheck === undefined) user.lastWorkCheck = 0;
     if (user.lastDailyDate === undefined) user.lastDailyDate = null;
+    if (user.tickets === undefined) user.tickets = 0;
+    if (user.displayRole === undefined) user.displayRole = null;
 }
 
 function normalizeData(data) {
@@ -52,6 +58,8 @@ function normalizeData(data) {
     if (!('dailyReminderSentDate' in data)) data.dailyReminderSentDate = null;
     if (!data.logs) data.logs = [];
     if (!data.hourlyLogs) data.hourlyLogs = {};
+    if (!data.doubleUps) data.doubleUps = {};
+    if (!data.derbies) data.derbies = {};
 
     for (const userId of Object.keys(data.users)) {
         ensureUser(data, userId);

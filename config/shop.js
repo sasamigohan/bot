@@ -1,4 +1,10 @@
 module.exports = {
+    gachaTicket: {
+        price: 250,
+        type: "ticket",
+        amount: 1
+    },
+    
     睡眠は偉業: {
         price: 500,
         roleId: "1505880504518447206"
