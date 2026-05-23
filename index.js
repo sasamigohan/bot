@@ -159,9 +159,21 @@ const commands = [
         .setDescription('ポイント確認'),
 
     new SlashCommandBuilder()
-        .setName('rank')
-        .setDescription('ランキング'),
-
+    .setName('rank')
+    .setDescription('ランキング')
+    .addStringOption(option =>
+        option
+            .setName('type')
+            .setDescription('ランキング種類')
+            .setRequired(false)
+            .addChoices(
+                { name: '所持ポイント', value: 'points' },
+                { name: 'レベル', value: 'level' },
+                { name: '作業時間', value: 'voice' },
+                { name: 'リアクション数', value: 'reaction' },
+                { name: 'メッセージ数', value: 'message' }
+            )
+    ),
     new SlashCommandBuilder()
         .setName('shop')
         .setDescription('ショップ'),
@@ -357,6 +369,8 @@ async function handleVoicePoints() {
 
             const user = data.users[member.id];
 
+            user.voiceMinutesTotal += 1;
+
             const isStreaming = member.voice.streaming;
             const micOn =
                 !member.voice.selfMute &&
@@ -475,6 +489,8 @@ client.on('messageCreate', async message => {
     const member =
         await message.guild.members.fetch(message.author.id);
 
+    data.users[message.author.id].messageCount += 1;
+
     await addEarnedPointsAndCheckLevel({
         guild: message.guild,
         member,
@@ -528,6 +544,9 @@ client.on('messageReactionAdd', async (reaction, user) => {
 
     const member =
         await message.guild.members.fetch(user.id);
+
+    ensureUser(data, user.id);
+    data.users[user.id].reactionCount += 1;
 
     await addEarnedPointsAndCheckLevel({
         guild: message.guild,
@@ -732,22 +751,57 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (interaction.commandName === 'rank') {
+        const type = interaction.options.getString('type') || 'points';
+
+        const labels = {
+            points: '所持ポイント',
+            level: 'レベル',
+            voice: '作業時間',
+            reaction: 'リアクション数',
+            message: 'メッセージ数'
+        };
+
+        const getValue = (userData) => {
+            if (type === 'points') return userData.points || 0;
+            if (type === 'level') return userData.level || 0;
+            if (type === 'voice') return userData.voiceMinutesTotal || 0;
+            if (type === 'reaction') return userData.reactionCount || 0;
+            if (type === 'message') return userData.messageCount || 0;
+            return userData.points || 0;
+        };
+
+        const formatValue = (value) => {
+            if (type === 'points') return `${value.toFixed(1)}pt`;
+            if (type === 'level') return `Lv.${value}`;
+            if (type === 'voice') {
+                const hours = Math.floor(value / 60);
+                const minutes = value % 60;
+                return `${hours}時間${minutes}分`;
+            }
+            if (type === 'reaction') return `${value}回`;
+            if (type === 'message') return `${value}通`;
+            return String(value);
+        };
+
         const ranking =
             Object.entries(data.users)
-                .sort((a, b) => b[1].points - a[1].points)
+                .sort((a, b) => getValue(b[1]) - getValue(a[1]))
                 .slice(0, 10);
 
-        let text = '🏆 所持ポイントランキング\n\n';
+        let text = `🏆 ${labels[type]}ランキング\n\n`;
 
         for (let i = 0; i < ranking.length; i++) {
-            const user = await client.users.fetch(ranking[i][0]);
+            const rankedUser = await client.users.fetch(ranking[i][0]);
+            const value = getValue(ranking[i][1]);
 
             text +=
-                `${i + 1}. ${user.username} - ` +
-                `${ranking[i][1].points.toFixed(1)}pt\n`;
+                `${i + 1}. ${rankedUser.username} - ` +
+                `${formatValue(value)}\n`;
         }
 
-        return interaction.reply({ content: text });
+        return interaction.reply({
+            content: text
+        });
     }
 
     if (interaction.commandName === 'shop') {
