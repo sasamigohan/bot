@@ -54,6 +54,8 @@ function ensureUser(data, userId) {
     if (user.reactionCount === undefined) user.reactionCount = 0;
     if (user.voiceMinutesTotal === undefined) user.voiceMinutesTotal = 0;
     if (user.voicePointMinutes === undefined) user.voicePointMinutes = 0;
+
+    if (user.lastOmikujiDate === undefined) user.lastOmikujiDate = null;
 }
 
 function normalizeData(data) {

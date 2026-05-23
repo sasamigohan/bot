@@ -21,7 +21,7 @@ const {
     addPoints,
     addPointLog
 } = require('./utils/dataManager');
-
+const omikujiData = require('./config/omikuji');
 const checkLevelUp = require('./utils/levelManager');
 const shop = require('./config/shop');
 const gacha = require('./config/gacha');
@@ -103,6 +103,24 @@ function rollDailyRoulette() {
     }
 
     return 10;
+}
+
+function pickRandom(array) {
+    return array[Math.floor(Math.random() * array.length)];
+}
+
+function getRandomColor() {
+    const r = Math.floor(Math.random() * 256);
+    const g = Math.floor(Math.random() * 256);
+    const b = Math.floor(Math.random() * 256);
+
+    const hex =
+        '#' +
+        r.toString(16).padStart(2, '0') +
+        g.toString(16).padStart(2, '0') +
+        b.toString(16).padStart(2, '0');
+
+    return { r, g, b, hex };
 }
 
 function getVcDecayMultiplier(minutes) {
@@ -207,10 +225,6 @@ const commands = [
                 .setDescription('追加する枚数')
                 .setRequired(true)
         ),
-
-    new SlashCommandBuilder()
-        .setName('daily')
-        .setDescription('1日1回無料のデイリールーレット'),
 
     new SlashCommandBuilder()
         .setName('give')
@@ -326,8 +340,8 @@ const commands = [
         ),
 
     new SlashCommandBuilder()
-        .setName('setcolor')
-        .setDescription('ロールカラー変更'),
+        .setName('omikuji')
+        .setDescription('今日のおみくじを引く'),
 
     new SlashCommandBuilder()
         .setName('mutebomb')
@@ -451,8 +465,8 @@ async function handleDailyReminder() {
             const chunk = mentions.slice(i, i + 30);
 
             await channel.send(
-                `🎡 デイリールーレットがまだです！ ${chunk.join(' ')}\n` +
-                `/daily で今日の無料ポイントを受け取れます。`
+                `本日のおみくじがまだです！ ${chunk.join(' ')}\n` +
+                `/omikuji で今日のおみくじと無料ポイントを受け取れます。`
             );
         }
     }
@@ -682,6 +696,85 @@ client.on('interactionCreate', async interaction => {
         });
     }
 
+
+    if (interaction.commandName === 'omikuji') {
+    const today = getJstDateString();
+
+    if (data.users[userId].lastOmikujiDate === today) {
+        return interaction.reply({
+            content: '今日はすでにおみくじを引いています。',
+            ephemeral: true
+        });
+    }
+
+    const member =
+        await interaction.guild.members.fetch(userId);
+
+    const roleId = ROLE_MAP[userId];
+
+    let colorText = '対応ロールなし';
+
+    if (roleId) {
+        try {
+            const color = getRandomColor();
+            const role = await interaction.guild.roles.fetch(roleId);
+
+            await role.setColor(color.hex);
+
+            colorText =
+                `RGB(${color.r}, ${color.g}, ${color.b}) / ${color.hex}`;
+        } catch (err) {
+            console.error(err);
+            colorText = 'カラー変更失敗';
+        }
+    }
+
+    const points = rollDailyRoulette();
+
+    await addEarnedPointsAndCheckLevel({
+        guild: interaction.guild,
+        member,
+        data,
+        amount: points,
+        fallbackChannel: interaction.channel
+    });
+
+    data.users[userId].lastOmikujiDate = today;
+
+    addPointLog(data, {
+        userId,
+        type: 'omikuji',
+        amount: points,
+        detail: 'daily omikuji'
+    });
+
+    saveData(data);
+
+    const result = {
+            "運勢": pickRandom(omikujiData["運勢"]),
+            "ガチャ運": pickRandom(omikujiData["ガチャ"]),
+            "エリア運": pickRandom(omikujiData["エリア"]),
+            "精霊運": pickRandom(omikujiData["精霊"]),
+            "絵文字運": pickRandom(omikujiData["絵文字"]),
+            "店員運": pickRandom(omikujiData["店員"]),
+            "爆発運": pickRandom(omikujiData["爆発"]),
+            "遭遇運": pickRandom(omikujiData["遭遇"]),
+            "味方運": pickRandom(omikujiData["味方"]),
+            "誤字運": pickRandom(omikujiData["誤字"]),
+            "ラッキーカラー": colorText,
+            "dailypoint": `${points}pt 獲得`
+        };
+
+        let text = `🎴 <@${userId}> の今日のおみくじ\n\n`;
+
+        for (const [name, value] of Object.entries(result)) {
+            text += `**${name}**：${value}\n`;
+        }
+
+        return interaction.reply({
+            content: text
+        });
+    }
     if (interaction.commandName === 'log') {
         try {
             if (!data.logs) data.logs = [];
@@ -980,45 +1073,6 @@ client.on('interactionCreate', async interaction => {
 
         return interaction.reply({
             content: `<@${target.id}> にガチャチケットを ${amount}枚 追加しました。`
-        });
-    }
-
-    if (interaction.commandName === 'daily') {
-        const today = getJstDateString();
-
-        if (data.users[userId].lastDailyDate === today) {
-            return interaction.reply({
-                content: '今日はすでにデイリールーレットを使用済みです。',
-                ephemeral: true
-            });
-        }
-
-        const points = rollDailyRoulette();
-
-        const member =
-            await interaction.guild.members.fetch(userId);
-
-        await addEarnedPointsAndCheckLevel({
-            guild: interaction.guild,
-            member,
-            data,
-            amount: points,
-            fallbackChannel: interaction.channel
-        });
-
-        data.users[userId].lastDailyDate = today;
-
-        addPointLog(data, {
-            userId,
-            type: 'daily',
-            amount: points,
-            detail: 'daily roulette'
-        });
-
-        saveData(data);
-
-        return interaction.reply({
-            content: `デイリールーレット結果: ${points}pt 獲得！`
         });
     }
 
@@ -1508,64 +1562,6 @@ client.on('interactionCreate', async interaction => {
                 `賞金: ${prizePerWinner.toFixed(1)}pt × ${winnerIds.length}人\n` +
                 `勝者: ${winnerIds.map(id => `<@${id}>`).join(' ')}`
         });
-    }
-
-    if (interaction.commandName === 'setcolor') {
-        const roleId = ROLE_MAP[userId];
-
-        if (!roleId) {
-            return interaction.reply({
-                content: '対応ロールがありません。',
-                ephemeral: true
-            });
-        }
-
-        const now = Date.now();
-        const cooldown = 24 * 60 * 60 * 1000;
-
-        const last = data.colorCooldowns[userId];
-
-        if (last && now - last < cooldown) {
-            return interaction.reply({
-                content: '1日1回までです。',
-                ephemeral: true
-            });
-        }
-
-        const r = Math.floor(Math.random() * 256);
-        const g = Math.floor(Math.random() * 256);
-        const b = Math.floor(Math.random() * 256);
-
-        const hex =
-            '#' +
-            r.toString(16).padStart(2, '0') +
-            g.toString(16).padStart(2, '0') +
-            b.toString(16).padStart(2, '0');
-
-        try {
-            const role =
-                await interaction.guild.roles.fetch(roleId);
-
-            await role.setColor(hex);
-
-            data.colorCooldowns[userId] = now;
-
-            saveData(data);
-
-            return interaction.reply({
-                content:
-                    `変更完了！\n` +
-                    `RGB(${r}, ${g}, ${b})\n` +
-                    `${hex}`
-            });
-        } catch (err) {
-            console.error(err);
-
-            return interaction.reply({
-                content: '変更失敗。',
-                ephemeral: true
-            });
-        }
     }
 
     if (interaction.commandName === 'mutebomb') {
