@@ -49,6 +49,11 @@ function ensureUser(data, userId) {
     if (user.lastDailyDate === undefined) user.lastDailyDate = null;
     if (user.tickets === undefined) user.tickets = 0;
     if (user.displayRole === undefined) user.displayRole = null;
+
+    if (user.messageCount === undefined) user.messageCount = 0;
+    if (user.reactionCount === undefined) user.reactionCount = 0;
+    if (user.voiceMinutesTotal === undefined) user.voiceMinutesTotal = 0;
+    if (user.voicePointMinutes === undefined) user.voicePointMinutes = 0;
 }
 
 function normalizeData(data) {
