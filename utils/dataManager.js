@@ -67,7 +67,11 @@ function normalizeData(data) {
     if (!data.hourlyLogs) data.hourlyLogs = {};
     if (!data.doubleUps) data.doubleUps = {};
     if (!data.derbies) data.derbies = {};
+    if (!data.colorRoleMap)
+        data.colorRoleMap = {};
 
+    if (!data.detachedColorRoles)
+        data.detachedColorRoles = {};
     for (const userId of Object.keys(data.users)) {
         ensureUser(data, userId);
     }
