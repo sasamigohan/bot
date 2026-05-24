@@ -66,6 +66,8 @@ const explosionGif =
 
 const timeoutList = [5, 10, 15, 30, 60];
 
+const recentLevelNotices = new Map();
+
 function getJstDateString() {
     const now = new Date();
     const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
@@ -123,6 +125,25 @@ function getRandomColor() {
     return { r, g, b, hex };
 }
 
+function isBombMutedChannel(data, channel) {
+    if (!data.mutedBombChannels) {
+        data.mutedBombChannels = [];
+    }
+
+    const ids = data.mutedBombChannels.map(String);
+
+    if (ids.includes(String(channel.id))) {
+        return true;
+    }
+
+    // スレッド内なら親チャンネルも見る
+    if (channel.parentId && ids.includes(String(channel.parentId))) {
+        return true;
+    }
+
+    return false;
+}
+
 function getVcDecayMultiplier(minutes) {
     const hour = Math.floor(minutes / 60);
 
@@ -137,6 +158,17 @@ function getVcDecayMultiplier(minutes) {
 
 async function announceLevelUp(guild, member, result, fallbackChannel = null) {
     if (!result.leveledUp) return;
+
+    const key = `${member.id}:${result.newLevel}`;
+    const now = Date.now();
+    const last = recentLevelNotices.get(key);
+
+    // 30秒以内の同じLv通知は無視
+    if (last && now - last < 30 * 1000) {
+        return;
+    }
+
+    recentLevelNotices.set(key, now);
 
     let channel = fallbackChannel;
 
@@ -455,7 +487,7 @@ async function handleDailyReminder() {
     const mentions = [];
 
     for (const [targetUserId, userData] of Object.entries(data.users)) {
-        if (userData.lastDailyDate !== today) {
+        if (userData.lastOmikujiDate !== today) {
             mentions.push(`<@${targetUserId}>`);
         }
     }
@@ -520,7 +552,7 @@ client.on('messageCreate', async message => {
         hourly: true
     });
 
-    if (!data.mutedBombChannels.includes(message.channel.id)) {
+    if (!isBombMutedChannel(data, message.channel)) {
         if (Math.random() <= settings.BOMB_CHANCE) {
             try {
                 const seconds =
@@ -586,7 +618,48 @@ client.on('interactionCreate', async interaction => {
 
         const parts = interaction.customId.split('_');
 
-        if (parts[0] !== 'doubleup') return;
+        if (parts[0] === 'omikuji' && parts[1] === 'color') {
+            const ownerId = parts[2];
+            const hex = `#${parts[3]}`;
+
+            if (interaction.user.id !== ownerId) {
+                return interaction.reply({
+                    content: 'これはあなたのおみくじカラーではありません。',
+                    ephemeral: true
+                });
+            }
+
+            const roleId = ROLE_MAP[ownerId];
+
+            if (!roleId) {
+                return interaction.reply({
+                    content: 'あなたに対応するカラー変更ロールがありません。',
+                    ephemeral: true
+                });
+            }
+
+            try {
+                const role = await interaction.guild.roles.fetch(roleId);
+
+                await role.setColor(hex);
+
+                return interaction.reply({
+                    content: `🎨 ラッキーカラー ${hex} に変更しました！`,
+                    ephemeral: true
+                });
+            } catch (err) {
+                console.error(err);
+
+                return interaction.reply({
+                    content: 'カラー変更に失敗しました。Botのロール位置や権限を確認してください。',
+                    ephemeral: true
+                });
+            }
+        }
+
+        if (parts[0] !== 'doubleup') {
+            return;
+        }
 
         const action = parts[1];
         const ownerId = parts[2];
@@ -698,60 +771,50 @@ client.on('interactionCreate', async interaction => {
 
 
     if (interaction.commandName === 'omikuji') {
-    const today = getJstDateString();
+        const today = getJstDateString();
 
-    if (data.users[userId].lastOmikujiDate === today) {
-        return interaction.reply({
-            content: '今日はすでにおみくじを引いています。',
-            ephemeral: true
-        });
-    }
-
-    const member =
-        await interaction.guild.members.fetch(userId);
-
-    const roleId = ROLE_MAP[userId];
-
-    let colorText = '対応ロールなし';
-
-    if (roleId) {
-        try {
-            const color = getRandomColor();
-            const role = await interaction.guild.roles.fetch(roleId);
-
-            await role.setColor(color.hex);
-
-            colorText =
-                `RGB(${color.r}, ${color.g}, ${color.b}) / ${color.hex}`;
-        } catch (err) {
-            console.error(err);
-            colorText = 'カラー変更失敗';
+        if (data.users[userId].lastOmikujiDate === today) {
+            return interaction.reply({
+                content: '今日はすでにおみくじを引いています。',
+                ephemeral: true
+            });
         }
-    }
 
-    const points = rollDailyRoulette();
+        const member =
+            await interaction.guild.members.fetch(userId);
 
-    await addEarnedPointsAndCheckLevel({
-        guild: interaction.guild,
-        member,
-        data,
-        amount: points,
-        fallbackChannel: interaction.channel
-    });
+        const luckyColor = getRandomColor();
 
-    data.users[userId].lastOmikujiDate = today;
+        const colorText =
+            `RGB(${luckyColor.r}, ${luckyColor.g}, ${luckyColor.b}) / ${luckyColor.hex}`;
 
-    addPointLog(data, {
-        userId,
-        type: 'omikuji',
-        amount: points,
-        detail: 'daily omikuji'
-    });
+        const roleId = ROLE_MAP[userId];
+        const canChangeColor = Boolean(roleId);
 
-    saveData(data);
+        const points = rollDailyRoulette();
 
-    const result = {
-            "運勢": pickRandom(omikujiData["運勢"]),
+        await addEarnedPointsAndCheckLevel({
+            guild: interaction.guild,
+            member,
+            data,
+            amount: points,
+            fallbackChannel: interaction.channel
+        });
+
+        data.users[userId].lastOmikujiDate = today;
+        data.users[userId].lastDailyDate = today;
+
+        addPointLog(data, {
+            userId,
+            type: 'omikuji',
+            amount: points,
+            detail: 'daily omikuji'
+        });
+
+        saveData(data);
+
+        const result = {
+            "運勢運": pickRandom(omikujiData["運勢"]),
             "ガチャ運": pickRandom(omikujiData["ガチャ"]),
             "エリア運": pickRandom(omikujiData["エリア"]),
             "精霊運": pickRandom(omikujiData["精霊"]),
@@ -761,8 +824,8 @@ client.on('interactionCreate', async interaction => {
             "遭遇運": pickRandom(omikujiData["遭遇"]),
             "味方運": pickRandom(omikujiData["味方"]),
             "誤字運": pickRandom(omikujiData["誤字"]),
-            "ラッキーカラー": colorText,
-            "dailypoint": `${points}pt 獲得`
+            "ラッキーカラー運": colorText,
+            "ポイント運": `${points}pt 獲得`
         };
 
         let text = `🎴 <@${userId}> の今日のおみくじ\n\n`;
@@ -771,10 +834,25 @@ client.on('interactionCreate', async interaction => {
             text += `**${name}**：${value}\n`;
         }
 
+        const components = [];
+
+        if (canChangeColor) {
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`omikuji_color_${userId}_${luckyColor.hex.replace('#', '')}`)
+                    .setLabel('ラッキーカラーに変更')
+                    .setStyle(ButtonStyle.Primary)
+            );
+
+            components.push(row);
+        }
+
         return interaction.reply({
-            content: text
+            content: text,
+            components
         });
     }
+
     if (interaction.commandName === 'log') {
         try {
             if (!data.logs) data.logs = [];
@@ -1147,7 +1225,7 @@ client.on('interactionCreate', async interaction => {
 
         return interaction.reply({
             content:
-                `<${target.id}> に ${received.toFixed(1)}pt 譲渡しました。\n` +
+                `<@${target.id}> に ${received.toFixed(1)}pt 譲渡しました。\n` +
                 `手数料 ${fee.toFixed(1)}pt は <@${ADMIN_USER_ID}> に送られました。`
         });
     }
@@ -1583,22 +1661,22 @@ client.on('interactionCreate', async interaction => {
             });
         }
 
-        const channelId = interaction.channel.id;
+        const channelId = String(interaction.channel.id);
 
-        if (data.mutedBombChannels.includes(channelId)) {
+        if (data.mutedBombChannels.map(String).includes(channelId)) {
             data.mutedBombChannels =
-                data.mutedBombChannels.filter(id => id !== channelId);
+            data.mutedBombChannels.filter(id => String(id) !== channelId);
 
             saveData(data);
 
             return interaction.reply({
                 content: '爆弾を有効化しました。'
             });
-        }
+}
 
         data.mutedBombChannels.push(channelId);
 
-        saveData(data);
+            saveData(data);
 
         return interaction.reply({
             content: '爆弾を無効化しました。'
