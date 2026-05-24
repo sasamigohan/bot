@@ -60,6 +60,17 @@ const ROLE_MAP = {
     "1240635630942425211": "1507285402199785563",
     "1323585690490900584": "1507285234138484796"
 };
+function getColorRoleId(data, userId) {
+    if (!data.colorRoleMap) {
+        data.colorRoleMap = {};
+    }
+
+    return (
+        data.colorRoleMap[userId] ||
+        ROLE_MAP[userId] ||
+        null
+    );
+}
 
 const explosionGif =
     "https://tenor.com/view/jpexplosion-gif-5562858";
@@ -377,7 +388,34 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('mutebomb')
-        .setDescription('このチャンネルの爆弾ON/OFF')
+        .setDescription('このチャンネルの爆弾ON/OFF'),
+
+    new SlashCommandBuilder()
+        .setName('colorrole_set')
+        .setDescription('管理者：カラー設定ロールを登録')
+        .addUserOption(option =>
+            option
+                .setName('user')
+                .setDescription('対象')
+                .setRequired(true)
+        )
+        .addRoleOption(option =>
+            option
+                .setName('role')
+                .setDescription('カラー用ロール')
+                .setRequired(true)
+        )
+];
+
+new SlashCommandBuilder()
+    .setName('colorrole_detach')
+    .setDescription('管理者：カラー用ロールを一時解除')
+    .addUserOption(option =>
+        option
+            .setName('user')
+            .setDescription('対象')
+            .setRequired(true)
+    )
 ].map(c => c.toJSON());
 
 const rest =
@@ -629,7 +667,7 @@ client.on('interactionCreate', async interaction => {
                 });
             }
 
-            const roleId = ROLE_MAP[ownerId];
+            const roleId = getColorRoleId(data, userId);
 
             if (!roleId) {
                 return interaction.reply({
@@ -769,7 +807,118 @@ client.on('interactionCreate', async interaction => {
         });
     }
 
+    if (
+    interaction.commandName ===
+    'colorrole_set'
+) {
+    if (
+        !interaction.member.permissions.has(
+            PermissionsBitField.Flags.Administrator
+        )
+    ) {
+        return interaction.reply({
+            content:'管理者専用',
+            ephemeral:true
+        });
+    }
 
+    const target =
+        interaction.options.getUser(
+            'user'
+        );
+
+    const role =
+        interaction.options.getRole(
+            'role'
+        );
+
+    if (!data.colorRoleMap) {
+        data.colorRoleMap = {};
+    }
+
+    data.colorRoleMap[
+        target.id
+    ] = role.id;
+
+    saveData(data);
+
+    return interaction.reply({
+        content:
+        `<@${target.id}> → <@&${role.id}> を登録しました`
+    });
+}
+
+if (
+    interaction.commandName ===
+    'colorrole_detach'
+) {
+    if (
+        !interaction.member.permissions.has(
+            PermissionsBitField.Flags.Administrator
+        )
+    ) {
+        return interaction.reply({
+            content:'管理者専用',
+            ephemeral:true
+        });
+    }
+
+    const target =
+        interaction.options.getUser(
+            'user'
+        );
+
+    const roleId =
+        getColorRoleId(
+            data,
+            target.id
+        );
+
+    if (!roleId) {
+        return interaction.reply({
+            content:
+            'ロール未登録',
+            ephemeral:true
+        });
+    }
+
+    const member =
+        await interaction.guild.members.fetch(
+            target.id
+        );
+
+    if (!data.detachedColorRoles) {
+        data.detachedColorRoles = {};
+    }
+
+    try {
+        await member.roles.remove(
+            roleId
+        );
+
+        data.detachedColorRoles[
+            target.id
+        ] = roleId;
+
+        saveData(data);
+
+        return interaction.reply({
+            content:
+            `一時解除しました。\n次回 /omikuji で自動復帰します`
+        });
+
+    } catch(err){
+        console.error(err);
+
+        return interaction.reply({
+            content:
+            '解除失敗',
+            ephemeral:true
+        });
+    }
+}
+
+    
     if (interaction.commandName === 'omikuji') {
         const today = getJstDateString();
 
@@ -782,13 +931,40 @@ client.on('interactionCreate', async interaction => {
 
         const member =
             await interaction.guild.members.fetch(userId);
+        
+        if (!data.detachedColorRoles) {
+            data.detachedColorRoles = {};
+        }
+
+        const detachedRoleId =
+            data.detachedColorRoles[userId];
+
+        if (detachedRoleId) {
+            try {
+                if (
+                    !member.roles.cache.has(
+                        detachedRoleId
+                    )
+                ) {
+                    await member.roles.add(
+                        detachedRoleId
+                    );
+                }
+
+                delete data.detachedColorRoles[userId];
+
+            } catch(err) {
+                console.error(err);
+            }
+        }
 
         const luckyColor = getRandomColor();
 
         const colorText =
             `RGB(${luckyColor.r}, ${luckyColor.g}, ${luckyColor.b}) / ${luckyColor.hex}`;
 
-        const roleId = ROLE_MAP[userId];
+        const roleId =
+            getColorRoleId(data, ownerId);
         const canChangeColor = Boolean(roleId);
 
         const points = rollDailyRoulette();
