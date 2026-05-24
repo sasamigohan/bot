@@ -404,18 +404,17 @@ const commands = [
                 .setName('role')
                 .setDescription('カラー用ロール')
                 .setRequired(true)
-        )
-];
+        ),
 
-new SlashCommandBuilder()
-    .setName('colorrole_detach')
-    .setDescription('管理者：カラー用ロールを一時解除')
-    .addUserOption(option =>
-        option
-            .setName('user')
-            .setDescription('対象')
-            .setRequired(true)
-    )
+    new SlashCommandBuilder()
+        .setName('colorrole_detach')
+        .setDescription('管理者：カラー用ロールを一時解除')
+        .addUserOption(option =>
+            option
+                .setName('user')
+                .setDescription('対象')
+                .setRequired(true)
+        )
 ].map(c => c.toJSON());
 
 const rest =
