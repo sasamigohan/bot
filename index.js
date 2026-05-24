@@ -408,13 +408,8 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('colorrole_detach')
-        .setDescription('管理者：カラー用ロールを一時解除')
-        .addUserOption(option =>
-            option
-                .setName('user')
-                .setDescription('対象')
-                .setRequired(true)
-        )
+        .setDescription('自分のカラー用ロールを一時解除')
+        
 ].map(c => c.toJSON());
 
 const rest =
@@ -851,21 +846,8 @@ if (
     interaction.commandName ===
     'colorrole_detach'
 ) {
-    if (
-        !interaction.member.permissions.has(
-            PermissionsBitField.Flags.Administrator
-        )
-    ) {
-        return interaction.reply({
-            content:'管理者専用',
-            ephemeral:true
-        });
-    }
 
-    const target =
-        interaction.options.getUser(
-            'user'
-        );
+    const target = interaction.user;
 
     const roleId =
         getColorRoleId(
@@ -876,7 +858,7 @@ if (
     if (!roleId) {
         return interaction.reply({
             content:
-            'ロール未登録',
+            'カラー設定ロールが登録されていません。',
             ephemeral:true
         });
     }
@@ -891,9 +873,14 @@ if (
     }
 
     try {
-        await member.roles.remove(
-            roleId
-        );
+
+        if (
+            member.roles.cache.has(roleId)
+        ) {
+            await member.roles.remove(
+                roleId
+            );
+        }
 
         data.detachedColorRoles[
             target.id
@@ -903,15 +890,18 @@ if (
 
         return interaction.reply({
             content:
-            `一時解除しました。\n次回 /omikuji で自動復帰します`
+            `🎨 カラー用ロールを一時的に外しました。\n` +
+            `次回 /omikuji で自動復帰します。`,
+            ephemeral:true
         });
 
     } catch(err){
+
         console.error(err);
 
         return interaction.reply({
             content:
-            '解除失敗',
+            'ロールを外せませんでした。',
             ephemeral:true
         });
     }
