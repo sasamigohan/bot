@@ -999,7 +999,7 @@ if (
             `RGB(${luckyColor.r}, ${luckyColor.g}, ${luckyColor.b}) / ${luckyColor.hex}`;
 
         const roleId =
-            getColorRoleId(data, ownerId);
+            getColorRoleId(data, userId);
         const canChangeColor = Boolean(roleId);
 
         const points = rollDailyRoulette();
