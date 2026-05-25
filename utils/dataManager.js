@@ -3,17 +3,17 @@ const { Pool } = require('pg');
 
 const DATA_FILE = './data.json';
 
-if (!process.env.DATABASE_URL) {
-    console.error("DATABASE_URL が設定されていません。データ保護のためBotを停止します。");
-    process.exit(1);
-}
-
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: {
         rejectUnauthorized: false
     }
 });
+
+if (!process.env.DATABASE_URL) {
+    console.error("DATABASE_URL が設定されていません。データ保護のためBotを停止します。");
+    process.exit(1);
+}
 
 let cache = {
     users: {},
@@ -133,12 +133,12 @@ function loadData() {
 }
 
 function saveData(data) {
-    if (!data.users || Object.keys(data.users).length === 0) {
-        console.error("users が空のため保存を拒否しました。");
+    cache = normalizeData(data);
+
+    if (!pool) {
+        fs.writeFileSync(DATA_FILE, JSON.stringify(cache, null, 2));
         return;
     }
-
-    cache = normalizeData(data);
 
     pool.query(
         `
