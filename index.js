@@ -645,49 +645,72 @@ client.on('messageReactionAdd', async (reaction, user) => {
 });
 
 client.on('interactionCreate', async interaction => {
-    if (interaction.isButton()) {
-        const data = loadData();
+        if (
+    interaction.customId.startsWith(
+        'omikuji_color_'
+    )
+) {
 
-        const parts = interaction.customId.split('_');
+    const data = loadData();
 
-        if (parts[0] === 'omikuji' && parts[1] === 'color') {
-            const ownerId = parts[2];
-            const hex = `#${parts[3]}`;
+    const parts =
+        interaction.customId.split('_');
 
-            if (interaction.user.id !== ownerId) {
-                return interaction.reply({
-                    content: 'これはあなたのおみくじカラーではありません。',
-                    ephemeral: true
-                });
-            }
+    const ownerId = parts[2];
+    const hex =
+        '#' + parts[3];
 
-            const roleId = getColorRoleId(data, userId);
+    if (
+        interaction.user.id !== ownerId
+    ) {
+        return interaction.reply({
+            content:
+            'これはあなたのおみくじではありません。',
+            ephemeral:true
+        });
+    }
 
-            if (!roleId) {
-                return interaction.reply({
-                    content: 'あなたに対応するカラー変更ロールがありません。',
-                    ephemeral: true
-                });
-            }
+    const roleId =
+        getColorRoleId(
+            data,
+            ownerId
+        );
 
-            try {
-                const role = await interaction.guild.roles.fetch(roleId);
+    if (!roleId) {
+        return interaction.reply({
+            content:
+            'カラー設定ロールがありません。',
+            ephemeral:true
+        });
+    }
 
-                await role.setColor(hex);
+    try {
 
-                return interaction.reply({
-                    content: `🎨 ラッキーカラー ${hex} に変更しました！`,
-                    ephemeral: true
-                });
-            } catch (err) {
-                console.error(err);
+        const role =
+            await interaction.guild.roles.fetch(
+                roleId
+            );
 
-                return interaction.reply({
-                    content: 'カラー変更に失敗しました。Botのロール位置や権限を確認してください。',
-                    ephemeral: true
-                });
-            }
-        }
+        await role.setColor(hex);
+
+        return interaction.reply({
+            content:
+            `🎨 ラッキーカラー ${hex} に変更しました！`,
+            ephemeral:true
+        });
+
+    } catch(err){
+
+        console.error(err);
+
+        return interaction.reply({
+            content:
+            'カラー変更に失敗しました。',
+            ephemeral:true
+        });
+
+    }
+}
 
         if (parts[0] !== 'doubleup') {
             return;
