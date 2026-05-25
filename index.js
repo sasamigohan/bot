@@ -645,106 +645,181 @@ client.on('messageReactionAdd', async (reaction, user) => {
 });
 
 client.on('interactionCreate', async interaction => {
+
+    // ボタン処理
+    if (interaction.isButton()) {
+
+        // おみくじカラー変更
         if (
-    interaction.customId.startsWith(
-        'omikuji_color_'
-    )
-) {
+            interaction.customId.startsWith(
+                'omikuji_color_'
+            )
+        ) {
 
-    const data = loadData();
+            const data = loadData();
 
-    const parts =
-        interaction.customId.split('_');
+            const parts =
+                interaction.customId.split('_');
 
-    const ownerId = parts[2];
-    const hex =
-        '#' + parts[3];
+            const ownerId = parts[2];
 
-    if (
-        interaction.user.id !== ownerId
-    ) {
-        return interaction.reply({
-            content:
-            'これはあなたのおみくじではありません。',
-            ephemeral:true
-        });
-    }
+            const hex =
+                '#' + parts[3];
 
-    const roleId =
-        getColorRoleId(
-            data,
-            ownerId
-        );
+            if (
+                interaction.user.id !== ownerId
+            ) {
+                return interaction.reply({
+                    content:
+                    'これはあなたのおみくじではありません。',
+                    ephemeral:true
+                });
+            }
 
-    if (!roleId) {
-        return interaction.reply({
-            content:
-            'カラー設定ロールがありません。',
-            ephemeral:true
-        });
-    }
+            const roleId =
+                getColorRoleId(
+                    data,
+                    ownerId
+                );
 
-    try {
+            if (!roleId) {
+                return interaction.reply({
+                    content:
+                    'カラー設定ロールがありません。',
+                    ephemeral:true
+                });
+            }
 
-        const role =
-            await interaction.guild.roles.fetch(
-                roleId
-            );
+            try {
 
-        await role.setColor(hex);
+                const role =
+                    await interaction.guild.roles.fetch(
+                        roleId
+                    );
 
-        return interaction.reply({
-            content:
-            `🎨 ラッキーカラー ${hex} に変更しました！`,
-            ephemeral:true
-        });
+                await role.setColor(hex);
 
-    } catch(err){
+                return interaction.reply({
+                    content:
+                    `🎨 ラッキーカラー ${hex} に変更しました！`,
+                    ephemeral:true
+                });
 
-        console.error(err);
+            } catch(err){
 
-        return interaction.reply({
-            content:
-            'カラー変更に失敗しました。',
-            ephemeral:true
-        });
+                console.error(err);
 
-    }
-}
+                return interaction.reply({
+                    content:
+                    'カラー変更に失敗しました。',
+                    ephemeral:true
+                });
 
-        if (parts[0] !== 'doubleup') {
-            return;
+            }
         }
 
-        const action = parts[1];
-        const ownerId = parts[2];
+        // ダブルアップ
+        if (
+            interaction.customId.startsWith(
+                'doubleup_'
+            )
+        ) {
 
-        if (interaction.user.id !== ownerId) {
-            return interaction.reply({
-                content: 'これはあなたのダブルアップではありません。',
-                ephemeral: true
-            });
-        }
+            const data = loadData();
 
-        ensureUser(data, ownerId);
+            const parts =
+                interaction.customId.split('_');
 
-        const game = data.doubleUps?.[ownerId];
+            const action = parts[1];
+            const ownerId = parts[2];
 
-        if (!game || !game.active) {
-            return interaction.reply({
-                content: 'このダブルアップは終了しています。',
-                ephemeral: true
-            });
-        }
+            if (interaction.user.id !== ownerId) {
+                return interaction.reply({
+                    content:
+                    'これはあなたのダブルアップではありません。',
+                    ephemeral:true
+                });
+            }
 
-        if (action === 'stop') {
-            data.users[ownerId].points += game.current;
+            ensureUser(data, ownerId);
+
+            const game =
+                data.doubleUps?.[ownerId];
+
+            if (!game || !game.active) {
+                return interaction.reply({
+                    content:
+                    'このダブルアップは終了しています。',
+                    ephemeral:true
+                });
+            }
+
+            if (action === 'stop') {
+
+                data.users[ownerId].points += game.current;
+
+                addPointLog(data, {
+                    userId: ownerId,
+                    type: 'doubleup-cashout',
+                    amount: game.current,
+                    detail: 'cash out'
+                });
+
+                delete data.doubleUps[ownerId];
+
+                saveData(data);
+
+                return interaction.update({
+                    content:
+                    `✅ ダブルアップ終了！\n` +
+                    `${game.current}pt を受け取りました。`,
+                    components:[]
+                });
+            }
+
+            const answer =
+                Math.random() < 0.5 ? 'A' : 'B';
+
+            if (action === answer) {
+
+                game.current *= 2;
+
+                saveData(data);
+
+                const row =
+                    new ActionRowBuilder()
+                        .addComponents(
+
+                            new ButtonBuilder()
+                                .setCustomId(`doubleup_A_${ownerId}`)
+                                .setLabel('A')
+                                .setStyle(ButtonStyle.Primary),
+
+                            new ButtonBuilder()
+                                .setCustomId(`doubleup_B_${ownerId}`)
+                                .setLabel('B')
+                                .setStyle(ButtonStyle.Primary),
+
+                            new ButtonBuilder()
+                                .setCustomId(`doubleup_stop_${ownerId}`)
+                                .setLabel('終了して受け取る')
+                                .setStyle(ButtonStyle.Success)
+                        );
+
+                return interaction.update({
+                    content:
+                    `🎯 正解！答えは ${answer} でした。\n` +
+                    `現在の山分: ${game.current}pt\n` +
+                    `続けますか？`,
+                    components:[row]
+                });
+            }
 
             addPointLog(data, {
                 userId: ownerId,
-                type: 'doubleup-cashout',
-                amount: game.current,
-                detail: 'cash out'
+                type: 'doubleup-lose',
+                amount: 0,
+                detail: `lost ${game.current}pt`
             });
 
             delete data.doubleUps[ownerId];
@@ -753,117 +828,65 @@ client.on('interactionCreate', async interaction => {
 
             return interaction.update({
                 content:
-                    `✅ ダブルアップ終了！\n` +
-                    `${game.current}pt を受け取りました。`,
-                components: []
-            });
-        }
-
-        const answer = Math.random() < 0.5 ? 'A' : 'B';
-
-        if (action === answer) {
-            game.current *= 2;
-
-            saveData(data);
-
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId(`doubleup_A_${ownerId}`)
-                    .setLabel('A')
-                    .setStyle(ButtonStyle.Primary),
-
-                new ButtonBuilder()
-                    .setCustomId(`doubleup_B_${ownerId}`)
-                    .setLabel('B')
-                    .setStyle(ButtonStyle.Primary),
-
-                new ButtonBuilder()
-                    .setCustomId(`doubleup_stop_${ownerId}`)
-                    .setLabel('終了して受け取る')
-                    .setStyle(ButtonStyle.Success)
-            );
-
-            return interaction.update({
-                content:
-                    `🎯 正解！答えは ${answer} でした。\n` +
-                    `現在の山分: ${game.current}pt\n` +
-                    `続けますか？`,
-                components: [row]
-            });
-        }
-
-        addPointLog(data, {
-            userId: ownerId,
-            type: 'doubleup-lose',
-            amount: 0,
-            detail: `lost ${game.current}pt`
-        });
-
-        delete data.doubleUps[ownerId];
-
-        saveData(data);
-
-        return interaction.update({
-            content:
                 `💥 失敗！答えは ${answer} でした。\n` +
                 `賭けポイントは失われました。`,
-            components: []
-        });
+                components:[]
+            });
+        }
+
+        return;
     }
 
+    // SlashCommand以外は無視
     if (!interaction.isChatInputCommand()) return;
 
     const data = loadData();
     const userId = interaction.user.id;
 
     ensureUser(data, userId);
-
     if (interaction.commandName === 'ping') {
         return interaction.reply({
             content: `🏓 Pong! ${client.ws.ping}ms`
         });
     }
 
-    if (
-    interaction.commandName ===
-    'colorrole_set'
-) {
-    if (
-        !interaction.member.permissions.has(
-            PermissionsBitField.Flags.Administrator
-        )
-    ) {
+    if (interaction.commandName === 'colorrole_set') {
+        if (
+            !interaction.member.permissions.has(
+                PermissionsBitField.Flags.Administrator
+            )
+        ) {
+            return interaction.reply({
+                content:'管理者専用',
+                ephemeral:true
+            });
+        }
+
+        const target =
+            interaction.options.getUser(
+                'user'
+            );
+
+        const role =
+            interaction.options.getRole(
+                'role'
+            );
+
+        if (!data.colorRoleMap) {
+            data.colorRoleMap = {};
+        }
+
+        data.colorRoleMap[
+            target.id
+        ] = role.id;
+
+        saveData(data);
+
         return interaction.reply({
-            content:'管理者専用',
-            ephemeral:true
+            content:
+            `<@${target.id}> → <@&${role.id}> を登録しました`
         });
     }
-
-    const target =
-        interaction.options.getUser(
-            'user'
-        );
-
-    const role =
-        interaction.options.getRole(
-            'role'
-        );
-
-    if (!data.colorRoleMap) {
-        data.colorRoleMap = {};
-    }
-
-    data.colorRoleMap[
-        target.id
-    ] = role.id;
-
-    saveData(data);
-
-    return interaction.reply({
-        content:
-        `<@${target.id}> → <@&${role.id}> を登録しました`
-    });
-}
 
 if (
     interaction.commandName ===
