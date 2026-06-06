@@ -45,6 +45,9 @@ function ensureUser(data, userId) {
 
     const user = data.users[userId];
 
+    if (!user.favoriteColors) user.favoriteColors = [];
+    if (user.lastManualColorChange === undefined) user.lastManualColorChange = 0;
+
     if (user.points === undefined) user.points = 0;
     if (user.levelPoints === undefined) user.levelPoints = user.points || 0;
     if (user.level === undefined) user.level = 0;
@@ -74,6 +77,8 @@ function normalizeData(data) {
     if (!data.derbies) data.derbies = {};
     if (!data.colorRoleMap)
         data.colorRoleMap = {};
+    if (!data.colorRoleMap) data.colorRoleMap = {};
+    if (!data.detachedColorRoles) data.detachedColorRoles = {};
 
     if (!data.detachedColorRoles)
         data.detachedColorRoles = {};
