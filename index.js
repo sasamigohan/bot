@@ -302,6 +302,28 @@ const commands = [
         ),
 
     new SlashCommandBuilder()
+        .setName('role_addpoint')
+        .setDescription('管理者専用：指定ロールの全員にポイントを付与')
+        .addRoleOption(option =>
+            option
+                .setName('role')
+                .setDescription('対象ロール')
+                .setRequired(true)
+        )
+        .addNumberOption(option =>
+            option
+                .setName('amount')
+                .setDescription('付与ポイント')
+                .setRequired(true)
+        )
+        .addBooleanOption(option =>
+            option
+                .setName('level')
+                .setDescription('Lv用ポイントにも加算するか')
+                .setRequired(true)
+        ),
+
+    new SlashCommandBuilder()
         .setName('displayrole')
         .setDescription('表示用ロールを付け替え')
         .addStringOption(option =>
@@ -408,8 +430,47 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('colorrole_detach')
-        .setDescription('自分のカラー用ロールを一時解除')
-        
+        .setDescription('自分のカラー用ロールを一時解除'),
+
+    new SlashCommandBuilder()
+        .setName('favoritecolor')
+        .setDescription('お気に入りカラーを管理')
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('list')
+                .setDescription('保存済みカラーを表示')
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('set')
+                .setDescription('保存済みカラーに変更')
+                .addIntegerOption(option =>
+                    option
+                        .setName('number')
+                        .setDescription('1 または 2')
+                        .setRequired(true)
+                        .addChoices(
+                            { name: '1', value: 1 },
+                            { name: '2', value: 2 }
+                        )
+                )
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('remove')
+                .setDescription('保存済みカラーを削除')
+                .addIntegerOption(option =>
+                    option
+                        .setName('number')
+                        .setDescription('1 または 2')
+                        .setRequired(true)
+                        .addChoices(
+                            { name: '1', value: 1 },
+                            { name: '2', value: 2 }
+                        )
+                )
+        ),
+
 ].map(c => c.toJSON());
 
 const rest =
@@ -539,23 +600,6 @@ async function handleDailyReminder() {
     saveData(data);
 }
 
-client.on('voiceStateUpdate', async (oldState, newState) => {
-    if (!settings.AUTO_SERVER_MUTE_ON_JOIN) return;
-
-    if (!oldState.channel && newState.channel) {
-        try {
-            if (newState.member.user.bot) return;
-
-            await newState.setMute(
-                true,
-                'VC入室時の自動サーバーミュート'
-            );
-        } catch (err) {
-            console.error('自動ミュート失敗:', err);
-        }
-    }
-});
-
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
     if (!message.guild) return;
@@ -596,7 +640,16 @@ client.on('messageCreate', async message => {
                     `${seconds}.`
                 );
 
-                await member.timeout(seconds * 1000, '爆弾');
+                if (
+                    member.permissions.has(PermissionsBitField.Flags.Administrator) ||
+                    !member.moderatable
+                ) {
+                    await message.channel.send(
+                        `💥 ただし権限が強すぎてタイムアウトできませんでした。`
+                    );
+                } else {
+                    await member.timeout(seconds * 1000, '爆弾');
+                }
             } catch (err) {
                 console.error(err);
             }
@@ -648,114 +701,153 @@ client.on('interactionCreate', async interaction => {
 
     // ボタン処理
     if (interaction.isButton()) {
+        const data = loadData();
 
-        // おみくじカラー変更
-        if (
-            interaction.customId.startsWith(
-                'omikuji_color_'
-            )
-        ) {
-
-            const data = loadData();
-
-            const parts =
-                interaction.customId.split('_');
-
+        // おみくじ：ラッキーカラー変更
+        if (interaction.customId.startsWith('omikuji_color_')) {
+            const parts = interaction.customId.split('_');
             const ownerId = parts[2];
-
-            const hex =
-                '#' + parts[3];
-
-            if (
-                interaction.user.id !== ownerId
-            ) {
-                return interaction.reply({
-                    content:
-                    'これはあなたのおみくじではありません。',
-                    ephemeral:true
-                });
-            }
-
-            const roleId =
-                getColorRoleId(
-                    data,
-                    ownerId
-                );
-
-            if (!roleId) {
-                return interaction.reply({
-                    content:
-                    'カラー設定ロールがありません。',
-                    ephemeral:true
-                });
-            }
-
-            try {
-
-                const role =
-                    await interaction.guild.roles.fetch(
-                        roleId
-                    );
-
-                await role.setColor(hex);
-
-                return interaction.reply({
-                    content:
-                    `🎨 ラッキーカラー ${hex} に変更しました！`,
-                    ephemeral:true
-                });
-
-            } catch(err){
-
-                console.error(err);
-
-                return interaction.reply({
-                    content:
-                    'カラー変更に失敗しました。',
-                    ephemeral:true
-                });
-
-            }
-        }
-
-        // ダブルアップ
-        if (
-            interaction.customId.startsWith(
-                'doubleup_'
-            )
-        ) {
-
-            const data = loadData();
-
-            const parts =
-                interaction.customId.split('_');
-
-            const action = parts[1];
-            const ownerId = parts[2];
+            const hex = '#' + parts[3];
+            const buttonDate = parts[4];
 
             if (interaction.user.id !== ownerId) {
                 return interaction.reply({
-                    content:
-                    'これはあなたのダブルアップではありません。',
-                    ephemeral:true
+                    content: 'これはあなたのおみくじではありません。',
+                    ephemeral: true
                 });
             }
 
             ensureUser(data, ownerId);
 
-            const game =
-                data.doubleUps?.[ownerId];
+            if (buttonDate !== getJstDateString()) {
+                return interaction.reply({
+                    content: 'このおみくじは期限切れです。',
+                    ephemeral: true
+                });
+            }
+
+            const roleId = getColorRoleId(data, ownerId);
+
+            if (!roleId) {
+                return interaction.reply({
+                    content: 'カラー設定ロールがありません。',
+                    ephemeral: true
+                });
+            }
+
+            try {
+                const role = await interaction.guild.roles.fetch(roleId);
+                await role.setColor(hex);
+
+                return interaction.reply({
+                    content: `🎨 ラッキーカラー ${hex} に変更しました！`,
+                    ephemeral: true
+                });
+            } catch (err) {
+                console.error(err);
+
+                return interaction.reply({
+                    content: 'カラー変更に失敗しました。Botのロール位置や権限を確認してください。',
+                    ephemeral: true
+                });
+            }
+        }
+
+        // おみくじ：お気に入り登録してラッキーカラー変更
+        if (interaction.customId.startsWith('omikuji_savecolor_')) {
+            const parts = interaction.customId.split('_');
+            const ownerId = parts[2];
+            const hex = '#' + parts[3];
+            const buttonDate = parts[4];
+
+            if (interaction.user.id !== ownerId) {
+                return interaction.reply({
+                    content: 'これはあなたのおみくじではありません。',
+                    ephemeral: true
+                });
+            }
+
+            ensureUser(data, ownerId);
+            const user = data.users[ownerId];
+
+            if (!user.favoriteColors) user.favoriteColors = [];
+
+            if (buttonDate !== getJstDateString()) {
+                return interaction.reply({
+                    content: 'このおみくじは期限切れです。',
+                    ephemeral: true
+                });
+            }
+
+            const roleId = getColorRoleId(data, ownerId);
+
+            if (!roleId) {
+                return interaction.reply({
+                    content: 'カラー設定ロールがありません。',
+                    ephemeral: true
+                });
+            }
+
+            if (user.favoriteColors.includes(hex)) {
+                return interaction.reply({
+                    content: 'このカラーはすでにお気に入り登録されています。',
+                    ephemeral: true
+                });
+            }
+
+            if (user.favoriteColors.length >= 2) {
+                return interaction.reply({
+                    content: 'お気に入りカラーは最大2つまでです。\n/favoritecolor remove で先に削除してください。',
+                    ephemeral: true
+                });
+            }
+
+            try {
+                const role = await interaction.guild.roles.fetch(roleId);
+                await role.setColor(hex);
+
+                user.favoriteColors.push(hex);
+                saveData(data);
+
+                return interaction.reply({
+                    content: `⭐ ${hex} をお気に入り登録し、ラッキーカラーに変更しました。`,
+                    ephemeral: true
+                });
+            } catch (err) {
+                console.error(err);
+
+                return interaction.reply({
+                    content: 'カラー変更に失敗しました。Botのロール位置や権限を確認してください。',
+                    ephemeral: true
+                });
+            }
+        }
+
+        // ダブルアップ
+        if (interaction.customId.startsWith('doubleup_')) {
+            const parts = interaction.customId.split('_');
+            const action = parts[1];
+            const ownerId = parts[2];
+
+            if (interaction.user.id !== ownerId) {
+                return interaction.reply({
+                    content: 'これはあなたのダブルアップではありません。',
+                    ephemeral: true
+                });
+            }
+
+            ensureUser(data, ownerId);
+
+            const game = data.doubleUps?.[ownerId];
 
             if (!game || !game.active) {
                 return interaction.reply({
-                    content:
-                    'このダブルアップは終了しています。',
-                    ephemeral:true
+                    content: 'このダブルアップは終了しています。',
+                    ephemeral: true
                 });
             }
 
             if (action === 'stop') {
-
                 data.users[ownerId].points += game.current;
 
                 addPointLog(data, {
@@ -771,47 +863,42 @@ client.on('interactionCreate', async interaction => {
 
                 return interaction.update({
                     content:
-                    `✅ ダブルアップ終了！\n` +
-                    `${game.current}pt を受け取りました。`,
-                    components:[]
+                        `✅ ダブルアップ終了！\n` +
+                        `${game.current}pt を受け取りました。`,
+                    components: []
                 });
             }
 
-            const answer =
-                Math.random() < 0.5 ? 'A' : 'B';
+            const answer = Math.random() < 0.5 ? 'A' : 'B';
 
             if (action === answer) {
-
                 game.current *= 2;
 
                 saveData(data);
 
-                const row =
-                    new ActionRowBuilder()
-                        .addComponents(
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder()
+                        .setCustomId(`doubleup_A_${ownerId}`)
+                        .setLabel('A')
+                        .setStyle(ButtonStyle.Primary),
 
-                            new ButtonBuilder()
-                                .setCustomId(`doubleup_A_${ownerId}`)
-                                .setLabel('A')
-                                .setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder()
+                        .setCustomId(`doubleup_B_${ownerId}`)
+                        .setLabel('B')
+                        .setStyle(ButtonStyle.Primary),
 
-                            new ButtonBuilder()
-                                .setCustomId(`doubleup_B_${ownerId}`)
-                                .setLabel('B')
-                                .setStyle(ButtonStyle.Primary),
-
-                            new ButtonBuilder()
-                                .setCustomId(`doubleup_stop_${ownerId}`)
-                                .setLabel('終了して受け取る')
-                                .setStyle(ButtonStyle.Success)
-                        );
+                    new ButtonBuilder()
+                        .setCustomId(`doubleup_stop_${ownerId}`)
+                        .setLabel('終了して受け取る')
+                        .setStyle(ButtonStyle.Success)
+                );
 
                 return interaction.update({
                     content:
-                    `🎯 正解！答えは ${answer} でした。\n` +
-                    `現在の山分: ${game.current}pt\n` +
-                    `続けますか？`,
-                    components:[row]
+                        `🎯 正解！答えは ${answer} でした。\n` +
+                        `現在の山分: ${game.current}pt\n` +
+                        `続けますか？`,
+                    components: [row]
                 });
             }
 
@@ -828,9 +915,9 @@ client.on('interactionCreate', async interaction => {
 
             return interaction.update({
                 content:
-                `💥 失敗！答えは ${answer} でした。\n` +
-                `賭けポイントは失われました。`,
-                components:[]
+                    `💥 失敗！答えは ${answer} でした。\n` +
+                    `賭けポイントは失われました。`,
+                components: []
             });
         }
 
@@ -1050,9 +1137,14 @@ if (
         if (canChangeColor) {
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
-                    .setCustomId(`omikuji_color_${userId}_${luckyColor.hex.replace('#', '')}`)
+                    .setCustomId(`omikuji_color_${userId}_${luckyColor.hex.replace('#', '')}_${today}`)
                     .setLabel('ラッキーカラーに変更')
-                    .setStyle(ButtonStyle.Primary)
+                    .setStyle(ButtonStyle.Primary),
+
+                new ButtonBuilder()
+                    .setCustomId(`omikuji_savecolor_${userId}_${luckyColor.hex.replace('#', '')}_${today}`)
+                    .setLabel('今の色をお気に入り登録して変更')
+                    .setStyle(ButtonStyle.Success)
             );
 
             components.push(row);
@@ -1062,6 +1154,114 @@ if (
             content: text,
             components
         });
+    }
+
+    if (interaction.commandName === 'favoritecolor') {
+        const subcommand = interaction.options.getSubcommand();
+        const user = data.users[userId];
+
+        if (!user.favoriteColors) user.favoriteColors = [];
+        if (user.lastManualColorChange === undefined) user.lastManualColorChange = 0;
+
+        const roleId = getColorRoleId(data, userId);
+
+        if (!roleId) {
+            return interaction.reply({
+                content: 'カラー設定ロールが登録されていません。',
+                ephemeral: true
+            });
+        }
+
+        if (subcommand === 'list') {
+            if (user.favoriteColors.length === 0) {
+                return interaction.reply({
+                    content: '保存済みのお気に入りカラーはありません。',
+                    ephemeral: true
+                });
+            }
+
+            let text = '🎨 お気に入りカラー一覧\n\n';
+
+            user.favoriteColors.forEach((color, index) => {
+                text += `${index + 1}. ${color}\n`;
+            });
+
+            return interaction.reply({
+                content: text,
+                ephemeral: true
+            });
+        }
+
+        if (subcommand === 'remove') {
+            const number = interaction.options.getInteger('number');
+            const index = number - 1;
+
+            if (!user.favoriteColors[index]) {
+                return interaction.reply({
+                    content: `${number}番のお気に入りカラーはありません。`,
+                    ephemeral: true
+                });
+            }
+
+            const removed = user.favoriteColors.splice(index, 1)[0];
+            saveData(data);
+
+            return interaction.reply({
+                content: `🗑️ ${number}番のカラー ${removed} を削除しました。`,
+                ephemeral: true
+            });
+        }
+
+        if (subcommand === 'set') {
+            const number = interaction.options.getInteger('number');
+            const index = number - 1;
+            const color = user.favoriteColors[index];
+
+            if (!color) {
+                return interaction.reply({
+                    content: `${number}番のお気に入りカラーはありません。`,
+                    ephemeral: true
+                });
+            }
+
+            const now = Date.now();
+            const cooldown = 24 * 60 * 60 * 1000;
+
+            if (
+                user.lastManualColorChange &&
+                now - user.lastManualColorChange < cooldown
+            ) {
+                const remain = cooldown - (now - user.lastManualColorChange);
+                const remainHours = Math.ceil(remain / (60 * 60 * 1000));
+
+                return interaction.reply({
+                    content:
+                        `お気に入りカラー変更は24時間に1回です。\n` +
+                        `あと約${remainHours}時間待ってください。`,
+                    ephemeral: true
+                });
+            }
+
+            try {
+                const role = await interaction.guild.roles.fetch(roleId);
+                await role.setColor(color);
+
+                user.lastManualColorChange = now;
+                saveData(data);
+
+                return interaction.reply({
+                    content: `🎨 お気に入りカラー ${color} に変更しました。`,
+                    ephemeral: true
+                });
+            } catch (err) {
+                console.error(err);
+
+                return interaction.reply({
+                    content: 'カラー変更に失敗しました。Botのロール位置や権限を確認してください。',
+                    ephemeral: true
+                });
+            }
+        }
     }
 
     if (interaction.commandName === 'log') {
@@ -1123,12 +1323,27 @@ if (
     if (interaction.commandName === 'balance') {
         const user = data.users[userId];
 
+        const voiceMinutesTotal = user.voiceMinutesTotal || 0;
+        const hours = Math.floor(voiceMinutesTotal / 60);
+        const minutes = voiceMinutesTotal % 60;
+
         return interaction.reply({
             content:
-                `💰 所持pt: ${user.points.toFixed(1)}pt\n` +
-                `🎫 ガチャチケット: ${user.tickets || 0}枚\n` +
-                `📈 レベル用累計pt: ${user.levelPoints.toFixed(1)}pt\n` +
-                `Lv.${user.level}`
+                `💰 所持pt: ${user.points.toFixed(1)}pt
+` +
+                `🎫 ガチャチケット: ${user.tickets || 0}枚
+
+` +
+                `⭐ Lv.${user.level}
+` +
+                `📈 Lv用累計pt: ${user.levelPoints.toFixed(1)}pt
+
+` +
+                `🎤 作業時間: ${hours}時間${minutes}分
+` +
+                `👍 リアクション数: ${user.reactionCount || 0}回
+` +
+                `💬 メッセージ数: ${user.messageCount || 0}通`
         });
     }
 
@@ -1478,6 +1693,79 @@ if (
 
         return interaction.reply({
             content: `<@${target.id}> に ${amount}pt を追加しました。`
+        });
+    }
+
+    if (interaction.commandName === 'role_addpoint') {
+        if (
+            !interaction.member.permissions.has(
+                PermissionsBitField.Flags.Administrator
+            )
+        ) {
+            return interaction.reply({
+                content: '管理者専用です。',
+                ephemeral: true
+            });
+        }
+
+        const role = interaction.options.getRole('role');
+        const amount = interaction.options.getNumber('amount');
+        const addToLevel = interaction.options.getBoolean('level');
+
+        if (!amount || amount <= 0) {
+            return interaction.reply({
+                content: '1より大きい数値を指定してください。',
+                ephemeral: true
+            });
+        }
+
+        await interaction.deferReply({ ephemeral: true });
+        await interaction.guild.members.fetch();
+
+        const members = interaction.guild.members.cache.filter(member =>
+            !member.user.bot && member.roles.cache.has(role.id)
+        );
+
+        if (members.size === 0) {
+            return interaction.editReply({
+                content: '対象ロールを持つメンバーがいません。'
+            });
+        }
+
+        let successCount = 0;
+        let levelUpCount = 0;
+
+        for (const member of members.values()) {
+            ensureUser(data, member.id);
+
+            addPoints(data, member.id, amount, { addToLevel });
+
+            addPointLog(data, {
+                userId: member.id,
+                type: 'role-addpoint',
+                amount,
+                detail: `role:${role.id} level:${addToLevel}`
+            });
+
+            if (addToLevel) {
+                const result = await checkLevelUp(member, data.users[member.id]);
+
+                if (result.leveledUp) {
+                    levelUpCount += 1;
+                    await announceLevelUp(interaction.guild, member, result, interaction.channel);
+                }
+            }
+
+            successCount += 1;
+        }
+
+        saveData(data);
+
+        return interaction.editReply({
+            content:
+                `<@&${role.id}> のメンバー ${successCount}人に ${amount}pt を付与しました。\n` +
+                `Lv用ポイント加算: ${addToLevel ? 'あり' : 'なし'}\n` +
+                `レベルアップ人数: ${levelUpCount}人`
         });
     }
 
