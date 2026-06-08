@@ -10,8 +10,7 @@ const {
     Partials,
     ActionRowBuilder,
     ButtonBuilder,
-    ButtonStyle,
-    EmbedBuilder
+    ButtonStyle
 } = require('discord.js');
 
 const {
@@ -71,129 +70,6 @@ function getColorRoleId(data, userId) {
         ROLE_MAP[userId] ||
         null
     );
-}
-
-function createEmbed(title, description, options = {}) {
-    const embed = new EmbedBuilder()
-        .setTitle(title)
-        .setDescription(description || '\u200b')
-        .setTimestamp();
-
-    if (options.color) {
-        embed.setColor(options.color);
-    }
-
-    if (options.footer) {
-        embed.setFooter({ text: options.footer });
-    }
-
-    return embed;
-}
-
-function guessEmbedColor(content) {
-    const text = String(content || '');
-
-    if (
-        /失敗|不足|存在しない|できません|ありません|期限切れ|エラー|権限|無効/.test(text)
-    ) {
-        return 0xED4245;
-    }
-
-    if (
-        /成功|追加|変更|購入|獲得|登録|解除|開始|終了|完了|有効化|無効化/.test(text)
-    ) {
-        return 0x57F287;
-    }
-
-    return 0x5865F2;
-}
-
-function guessEmbedTitle(content) {
-    const text = String(content || '');
-
-    if (
-        /失敗|不足|存在しない|できません|ありません|期限切れ|エラー|権限/.test(text)
-    ) {
-        return '⚠️ エラー';
-    }
-
-    if (
-        /成功|追加|変更|購入|獲得|登録|解除|完了/.test(text)
-    ) {
-        return '✅ 完了';
-    }
-
-    if (/開始/.test(text)) {
-        return '🚀 開始';
-    }
-
-    if (/終了/.test(text)) {
-        return '🏁 終了';
-    }
-
-    return 'お知らせ';
-}
-
-function contentToEmbedPayload(payload) {
-    if (!payload || typeof payload !== 'object') {
-        return payload;
-    }
-
-    if (payload.embeds || payload.content === undefined || payload.content === null) {
-        return payload;
-    }
-
-    const rawContent = String(payload.content);
-    const trimmed = rawContent.trim();
-
-    if (!trimmed) {
-        return payload;
-    }
-
-    const lines = trimmed.split('\n');
-    let title = guessEmbedTitle(trimmed);
-    let description = trimmed;
-
-    if (lines.length > 1 && lines[0].length <= 80) {
-        title = lines.shift().trim() || title;
-        description = lines.join('\n').trim() || trimmed;
-    }
-
-    return {
-        ...payload,
-        content: '',
-        embeds: [
-            createEmbed(
-                title,
-                description.slice(0, 4096),
-                {
-                    color: guessEmbedColor(trimmed)
-                }
-            )
-        ]
-    };
-}
-
-function patchInteractionEmbed(interaction) {
-    const originalReply = interaction.reply.bind(interaction);
-    const originalEditReply = interaction.editReply?.bind(interaction);
-    const originalUpdate = interaction.update?.bind(interaction);
-
-    interaction.reply = (payload) => {
-        return originalReply(contentToEmbedPayload(payload));
-    };
-
-    if (originalEditReply) {
-        interaction.editReply = (payload) => {
-            return originalEditReply(contentToEmbedPayload(payload));
-        };
-    }
-
-    if (originalUpdate) {
-        interaction.update = (payload) => {
-            return originalUpdate(contentToEmbedPayload(payload));
-        };
-    }
 }
 
 const explosionGif =
@@ -822,7 +698,6 @@ client.on('messageReactionAdd', async (reaction, user) => {
 });
 
 client.on('interactionCreate', async interaction => {
-    patchInteractionEmbed(interaction);
 
     // ボタン処理
     if (interaction.isButton()) {
@@ -913,6 +788,13 @@ client.on('interactionCreate', async interaction => {
                 });
             }
 
+            if (user.favoriteColors.includes(hex)) {
+                return interaction.reply({
+                    content: 'このカラーはすでにお気に入り登録されています。',
+                    ephemeral: true
+                });
+            }
+
             if (user.favoriteColors.length >= 2) {
                 return interaction.reply({
                     content: 'お気に入りカラーは最大2つまでです。\n/favoritecolor remove で先に削除してください。',
@@ -922,24 +804,13 @@ client.on('interactionCreate', async interaction => {
 
             try {
                 const role = await interaction.guild.roles.fetch(roleId);
-                const currentColor = role.hexColor || '#000000';
-
-                if (user.favoriteColors.includes(currentColor)) {
-                    return interaction.reply({
-                        content: `現在の色 ${currentColor} はすでにお気に入り登録されています。`,
-                        ephemeral: true
-                    });
-                }
-
                 await role.setColor(hex);
 
-                user.favoriteColors.push(currentColor);
+                user.favoriteColors.push(hex);
                 saveData(data);
 
                 return interaction.reply({
-                    content:
-                        `⭐ 現在の色 ${currentColor} をお気に入り登録しました。\n` +
-                        `🎨 ラッキーカラー ${hex} に変更しました。`,
+                    content: `⭐ ${hex} をお気に入り登録し、ラッキーカラーに変更しました。`,
                     ephemeral: true
                 });
             } catch (err) {
@@ -1255,6 +1126,12 @@ if (
             "ポイント運": `${points}pt 獲得`
         };
 
+        let text = `🎴 <@${userId}> の今日のおみくじ\n\n`;
+
+        for (const [name, value] of Object.entries(result)) {
+            text += `**${name}**：${value}\n`;
+        }
+
         const components = [];
 
         if (canChangeColor) {
@@ -1273,21 +1150,8 @@ if (
             components.push(row);
         }
 
-        const omikujiDescription =
-            Object.entries(result)
-                .map(([name, value]) => `**${name}**：${value}`)
-                .join('\n');
-
         return interaction.reply({
-            embeds: [
-                createEmbed(
-                    `🎴 ${interaction.user.username} の今日のおみくじ`,
-                    omikujiDescription,
-                    {
-                        color: luckyColor.hex
-                    }
-                )
-            ],
+            content: text,
             components
         });
     }
