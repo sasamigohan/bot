@@ -260,6 +260,63 @@ function getRandomColor() {
     return { r, g, b, hex };
 }
 
+
+function parseOmikujiColorCustomId(customId) {
+    const parts = customId.split('_');
+
+    const ownerId = parts[2];
+    const primaryHex = '#' + parts[3];
+
+    let secondaryHex = null;
+    let buttonDate = parts[4];
+    let colorMode = 'single';
+
+    if (parts.length >= 7) {
+        secondaryHex = '#' + parts[4];
+        buttonDate = parts[5];
+        colorMode = parts[6] || 'gradient';
+    } else if (parts.length >= 6) {
+        colorMode = parts[5] || 'single';
+    }
+
+    return {
+        ownerId,
+        primaryHex,
+        secondaryHex,
+        buttonDate,
+        colorMode
+    };
+}
+
+async function setRoleColorByMode(role, colorMode, primaryHex, secondaryHex = null) {
+    if (colorMode === 'gradient' && secondaryHex) {
+        const gradientColors = {
+            primaryColor: primaryHex,
+            secondaryColor: secondaryHex
+        };
+
+        if (typeof role.setColors === 'function') {
+            return role.setColors(gradientColors);
+        }
+
+        try {
+            return await role.edit({
+                colors: gradientColors
+            });
+        } catch (err) {
+            // discord.jsのバージョン差異対策
+            return await role.edit({
+                colors: {
+                    primary_color: primaryHex,
+                    secondary_color: secondaryHex
+                }
+            });
+        }
+    }
+
+    return role.setColor(primaryHex);
+}
+
 function isBombMutedChannel(data, channel) {
     if (!data.mutedBombChannels) {
         data.mutedBombChannels = [];
@@ -531,7 +588,17 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('omikuji')
-        .setDescription('今日のおみくじを引く'),
+        .setDescription('今日のおみくじを引く')
+        .addStringOption(option =>
+            option
+                .setName('mode')
+                .setDescription('ラッキーカラーの種類')
+                .setRequired(false)
+                .addChoices(
+                    { name: '通常カラー', value: 'single' },
+                    { name: 'グラデーション', value: 'gradient' }
+                )
+        ),
 
     new SlashCommandBuilder()
         .setName('mutebomb')
@@ -594,6 +661,17 @@ const commands = [
                             { name: '2', value: 2 }
                         )
                 )
+        ),
+
+
+    new SlashCommandBuilder()
+        .setName('debug_reset_daily')
+        .setDescription('管理者専用：一日一回制限をリセット')
+        .addUserOption(option =>
+            option
+                .setName('user')
+                .setDescription('対象ユーザー')
+                .setRequired(true)
         ),
 
     new SlashCommandBuilder()
@@ -871,10 +949,13 @@ client.on('interactionCreate', async interaction => {
 
         // おみくじ：ラッキーカラー変更
         if (interaction.customId.startsWith('omikuji_color_')) {
-            const parts = interaction.customId.split('_');
-            const ownerId = parts[2];
-            const hex = '#' + parts[3];
-            const buttonDate = parts[4];
+            const {
+                ownerId,
+                primaryHex,
+                secondaryHex,
+                buttonDate,
+                colorMode
+            } = parseOmikujiColorCustomId(interaction.customId);
 
             if (interaction.user.id !== ownerId) {
                 return interaction.reply({
@@ -903,17 +984,22 @@ client.on('interactionCreate', async interaction => {
 
             try {
                 const role = await interaction.guild.roles.fetch(roleId);
-                await role.setColor(hex);
+                await setRoleColorByMode(role, colorMode, primaryHex, secondaryHex);
+
+                const colorLabel =
+                    colorMode === 'gradient' && secondaryHex
+                        ? `${primaryHex} → ${secondaryHex}`
+                        : primaryHex;
 
                 return interaction.reply({
-                    content: `🎨 ラッキーカラー ${hex} に変更しました！`,
+                    content: `🎨 ラッキーカラー ${colorLabel} に変更しました！`,
                     ephemeral: true
                 });
             } catch (err) {
                 console.error(err);
 
                 return interaction.reply({
-                    content: 'カラー変更に失敗しました。Botのロール位置や権限を確認してください。',
+                    content: 'カラー変更に失敗しました。Botのロール位置や権限、またはグラデーションカラー対応状況を確認してください。',
                     ephemeral: true
                 });
             }
@@ -921,10 +1007,13 @@ client.on('interactionCreate', async interaction => {
 
         // おみくじ：お気に入り登録してラッキーカラー変更
         if (interaction.customId.startsWith('omikuji_savecolor_')) {
-            const parts = interaction.customId.split('_');
-            const ownerId = parts[2];
-            const hex = '#' + parts[3];
-            const buttonDate = parts[4];
+            const {
+                ownerId,
+                primaryHex,
+                secondaryHex,
+                buttonDate,
+                colorMode
+            } = parseOmikujiColorCustomId(interaction.customId);
 
             if (interaction.user.id !== ownerId) {
                 return interaction.reply({
@@ -972,22 +1061,27 @@ client.on('interactionCreate', async interaction => {
                     });
                 }
 
-                await role.setColor(hex);
+                await setRoleColorByMode(role, colorMode, primaryHex, secondaryHex);
 
                 user.favoriteColors.push(currentColor);
                 saveData(data);
 
+                const colorLabel =
+                    colorMode === 'gradient' && secondaryHex
+                        ? `${primaryHex} → ${secondaryHex}`
+                        : primaryHex;
+
                 return interaction.reply({
                     content:
                         `⭐ 現在の色 ${currentColor} をお気に入り登録しました。\n` +
-                        `🎨 ラッキーカラー ${hex} に変更しました。`,
+                        `🎨 ラッキーカラー ${colorLabel} に変更しました。`,
                     ephemeral: true
                 });
             } catch (err) {
                 console.error(err);
 
                 return interaction.reply({
-                    content: 'カラー変更に失敗しました。Botのロール位置や権限を確認してください。',
+                    content: 'カラー変更に失敗しました。Botのロール位置や権限、またはグラデーションカラー対応状況を確認してください。',
                     ephemeral: true
                 });
             }
@@ -1119,6 +1213,36 @@ client.on('interactionCreate', async interaction => {
                 mode === 'off'
                     ? 'デイリーおみくじ未実行通知を受け取らないようにしました。'
                     : 'デイリーおみくじ未実行通知を受け取るようにしました。',
+            ephemeral: true
+        });
+    }
+
+
+    if (interaction.commandName === 'debug_reset_daily') {
+        if (
+            !interaction.member.permissions.has(
+                PermissionsBitField.Flags.Administrator
+            )
+        ) {
+            return interaction.reply({
+                content: '管理者専用です。',
+                ephemeral: true
+            });
+        }
+
+        const target = interaction.options.getUser('user');
+
+        ensureUser(data, target.id);
+
+        data.users[target.id].lastOmikujiDate = null;
+        data.users[target.id].lastDailyDate = null;
+
+        saveData(data);
+
+        return interaction.reply({
+            content:
+                `<@${target.id}> の一日一回制限をリセットしました。\n` +
+                `再度 /omikuji を実行できます。`,
             ephemeral: true
         });
     }
@@ -1266,10 +1390,15 @@ if (
             }
         }
 
+        const colorMode = interaction.options.getString('mode') || 'single';
+
         const luckyColor = getRandomColor();
+        const luckyColor2 = colorMode === 'gradient' ? getRandomColor() : null;
 
         const colorText =
-            `RGB(${luckyColor.r}, ${luckyColor.g}, ${luckyColor.b}) / ${luckyColor.hex}`;
+            colorMode === 'gradient' && luckyColor2
+                ? `グラデーション / ${luckyColor.hex} → ${luckyColor2.hex}`
+                : `RGB(${luckyColor.r}, ${luckyColor.g}, ${luckyColor.b}) / ${luckyColor.hex}`;
 
         const roleId =
             getColorRoleId(data, userId);
@@ -1317,12 +1446,20 @@ if (
         if (canChangeColor) {
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
-                    .setCustomId(`omikuji_color_${userId}_${luckyColor.hex.replace('#', '')}_${today}`)
+                    .setCustomId(
+                        colorMode === 'gradient' && luckyColor2
+                            ? `omikuji_color_${userId}_${luckyColor.hex.replace('#', '')}_${luckyColor2.hex.replace('#', '')}_${today}_gradient`
+                            : `omikuji_color_${userId}_${luckyColor.hex.replace('#', '')}_${today}_single`
+                    )
                     .setLabel('ラッキーカラーに変更')
                     .setStyle(ButtonStyle.Primary),
 
                 new ButtonBuilder()
-                    .setCustomId(`omikuji_savecolor_${userId}_${luckyColor.hex.replace('#', '')}_${today}`)
+                    .setCustomId(
+                        colorMode === 'gradient' && luckyColor2
+                            ? `omikuji_savecolor_${userId}_${luckyColor.hex.replace('#', '')}_${luckyColor2.hex.replace('#', '')}_${today}_gradient`
+                            : `omikuji_savecolor_${userId}_${luckyColor.hex.replace('#', '')}_${today}_single`
+                    )
                     .setLabel('今の色をお気に入り登録して変更')
                     .setStyle(ButtonStyle.Success)
             );
