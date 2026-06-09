@@ -457,6 +457,7 @@ const commands = [
                 .setRequired(true)
                 .addChoices(
                     { name: 'なし', value: 'none' },
+                    { name: '購入済みすべて', value: 'all' },
                     { name: '睡眠は偉業', value: '睡眠は偉業' },
                     { name: '食事は偉業', value: '食事は偉業' },
                     { name: 'ハーブティ提供中', value: 'ハーブティ提供中' },
@@ -595,6 +596,20 @@ const commands = [
                 )
         ),
 
+    new SlashCommandBuilder()
+        .setName('daily_notify')
+        .setDescription('デイリーおみくじ通知の受け取り設定')
+        .addStringOption(option =>
+            option
+                .setName('mode')
+                .setDescription('通知設定')
+                .setRequired(true)
+                .addChoices(
+                    { name: '受け取る', value: 'on' },
+                    { name: '受け取らない', value: 'off' }
+                )
+        ),
+
 ].map(c => c.toJSON());
 
 const rest =
@@ -704,7 +719,10 @@ async function handleDailyReminder() {
     const mentions = [];
 
     for (const [targetUserId, userData] of Object.entries(data.users)) {
-        if (userData.lastOmikujiDate !== today) {
+        if (
+            userData.lastOmikujiDate !== today &&
+            !userData.dailyReminderMuted
+        ) {
             mentions.push(`<@${targetUserId}>`);
         }
     }
@@ -713,10 +731,19 @@ async function handleDailyReminder() {
         for (let i = 0; i < mentions.length; i += 30) {
             const chunk = mentions.slice(i, i + 30);
 
-            await channel.send(
-                `本日のおみくじがまだです！ ${chunk.join(' ')}\n` +
-                `/omikuji で今日のおみくじと無料ポイントを受け取れます。`
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId('daily_reminder_mute')
+                    .setLabel('今後通知を受け取らない')
+                    .setStyle(ButtonStyle.Secondary)
             );
+
+            await channel.send({
+                content:
+                    `本日のおみくじがまだです！ ${chunk.join(' ')}\n` +
+                    `/omikuji で今日のおみくじと無料ポイントを受け取れます。`,
+                components: [row]
+            });
         }
     }
 
@@ -827,6 +854,20 @@ client.on('interactionCreate', async interaction => {
     // ボタン処理
     if (interaction.isButton()) {
         const data = loadData();
+
+        if (interaction.customId === 'daily_reminder_mute') {
+            const buttonUserId = interaction.user.id;
+
+            ensureUser(data, buttonUserId);
+            data.users[buttonUserId].dailyReminderMuted = true;
+
+            saveData(data);
+
+            return interaction.reply({
+                content: '今後、デイリーおみくじ未実行通知を受け取らないようにしました。',
+                ephemeral: true
+            });
+        }
 
         // おみくじ：ラッキーカラー変更
         if (interaction.customId.startsWith('omikuji_color_')) {
@@ -1063,6 +1104,22 @@ client.on('interactionCreate', async interaction => {
     if (interaction.commandName === 'ping') {
         return interaction.reply({
             content: `🏓 Pong! ${client.ws.ping}ms`
+        });
+    }
+
+    if (interaction.commandName === 'daily_notify') {
+        const mode = interaction.options.getString('mode');
+
+        data.users[userId].dailyReminderMuted = mode === 'off';
+
+        saveData(data);
+
+        return interaction.reply({
+            content:
+                mode === 'off'
+                    ? 'デイリーおみくじ未実行通知を受け取らないようにしました。'
+                    : 'デイリーおみくじ未実行通知を受け取るようにしました。',
+            ephemeral: true
         });
     }
 
@@ -1598,6 +1655,16 @@ if (
 
         data.users[userId].points -= item.price;
 
+        if (settings.DISPLAY_ROLES && settings.DISPLAY_ROLES[itemName]) {
+            if (!data.users[userId].purchasedDisplayRoles) {
+                data.users[userId].purchasedDisplayRoles = [];
+            }
+
+            if (!data.users[userId].purchasedDisplayRoles.includes(itemName)) {
+                data.users[userId].purchasedDisplayRoles.push(itemName);
+            }
+        }
+
         addPointLog(data, {
             userId,
             type: 'buy',
@@ -1915,7 +1982,9 @@ if (
             });
         }
 
-        if (!(selected in settings.DISPLAY_ROLES)) {
+        const isSpecialOption = selected === 'none' || selected === 'all';
+
+        if (!isSpecialOption && !(selected in settings.DISPLAY_ROLES)) {
             return interaction.reply({
                 content: '存在しない表示ロールです。',
                 ephemeral: true
@@ -1924,6 +1993,12 @@ if (
 
         const member =
             await interaction.guild.members.fetch(userId);
+
+        if (!data.users[userId].purchasedDisplayRoles) {
+            data.users[userId].purchasedDisplayRoles = [];
+        }
+
+        const purchasedDisplayRoles = data.users[userId].purchasedDisplayRoles;
 
         const displayRoleIds =
             Object.values(settings.DISPLAY_ROLES)
@@ -1936,6 +2011,60 @@ if (
                 }
             }
 
+            if (selected === 'none') {
+                data.users[userId].displayRole = 'none';
+                saveData(data);
+
+                return interaction.reply({
+                    content: '表示ロールをすべて解除しました。',
+                    ephemeral: true
+                });
+            }
+
+            if (selected === 'all') {
+                const addRoleNames = purchasedDisplayRoles
+                    .filter(name => settings.DISPLAY_ROLES[name]);
+
+                if (addRoleNames.length === 0) {
+                    saveData(data);
+
+                    return interaction.reply({
+                        content: '購入済みの表示ロールがありません。',
+                        ephemeral: true
+                    });
+                }
+
+                for (const roleName of addRoleNames) {
+                    const roleId = settings.DISPLAY_ROLES[roleName];
+
+                    if (roleId) {
+                        await member.roles.add(roleId);
+                    }
+                }
+
+                data.users[userId].displayRole = 'all';
+
+                saveData(data);
+
+                return interaction.reply({
+                    content:
+                        `購入済みの表示ロールをすべて付与しました。\n` +
+                        addRoleNames.map(name => `・${name}`).join('\n'),
+                    ephemeral: true
+                });
+            }
+
+            if (!purchasedDisplayRoles.includes(selected)) {
+                saveData(data);
+
+                return interaction.reply({
+                    content:
+                        `この表示ロール「${selected}」はまだ購入していません。\n` +
+                        `/shop で購入してから使用してください。`,
+                    ephemeral: true
+                });
+            }
+
             const newRoleId = settings.DISPLAY_ROLES[selected];
 
             if (newRoleId) {
@@ -1945,13 +2074,6 @@ if (
             data.users[userId].displayRole = selected;
 
             saveData(data);
-
-            if (selected === 'none') {
-                return interaction.reply({
-                    content: '表示ロールを解除しました。',
-                    ephemeral: true
-                });
-            }
 
             return interaction.reply({
                 content: `表示ロールを ${selected} に変更しました。`,

@@ -23,7 +23,9 @@ let cache = {
     logs: [],
     hourlyLogs: {},
     doubleUps: {},
-    derbies: {}
+    derbies: {},
+    colorRoleMap: {},
+    detachedColorRoles: {}
 };
 
 function createDefaultData() {
@@ -35,7 +37,9 @@ function createDefaultData() {
         logs: [],
         hourlyLogs: {},
         doubleUps: {},
-        derbies: {}
+        derbies: {},
+        colorRoleMap: {},
+        detachedColorRoles: {}
     };
 }
 
@@ -47,6 +51,8 @@ function ensureUser(data, userId) {
 
     if (!user.favoriteColors) user.favoriteColors = [];
     if (user.lastManualColorChange === undefined) user.lastManualColorChange = 0;
+    if (user.dailyReminderMuted === undefined) user.dailyReminderMuted = false;
+    if (!user.purchasedDisplayRoles) user.purchasedDisplayRoles = [];
 
     if (user.points === undefined) user.points = 0;
     if (user.levelPoints === undefined) user.levelPoints = user.points || 0;
