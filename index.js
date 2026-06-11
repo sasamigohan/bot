@@ -317,6 +317,34 @@ async function setRoleColorByMode(role, colorMode, primaryHex, secondaryHex = nu
     return role.setColor(primaryHex);
 }
 
+
+function getMemberDisplayName(member) {
+    if (!member) return null;
+    return member.displayName || member.user?.globalName || member.user?.username || null;
+}
+
+async function getDisplayName(guild, userId) {
+    try {
+        const member = await guild.members.fetch(userId);
+        return getMemberDisplayName(member) || userId;
+    } catch {
+        try {
+            const user = await client.users.fetch(userId);
+            return user.globalName || user.username || userId;
+        } catch {
+            return userId;
+        }
+    }
+}
+
+function getInteractionDisplayName(interaction) {
+    return interaction.member?.displayName ||
+        interaction.user?.globalName ||
+        interaction.user?.username ||
+        interaction.user?.id ||
+        'Unknown';
+}
+
 function isBombMutedChannel(data, channel) {
     if (!data.mutedBombChannels) {
         data.mutedBombChannels = [];
@@ -397,31 +425,33 @@ const commands = [
         .setDescription('Botの応答確認'),
 
     new SlashCommandBuilder()
-        .setName('balance')
-        .setDescription('ポイント確認'),
+        .setName('stats')
+        .setDescription('ポイント・統計確認'),
 
     new SlashCommandBuilder()
-    .setName('rank')
-    .setDescription('ランキング')
-    .addStringOption(option =>
-        option
-            .setName('type')
-            .setDescription('ランキング種類')
-            .setRequired(false)
-            .addChoices(
-                { name: '所持ポイント', value: 'points' },
-                { name: 'レベル', value: 'level' },
-                { name: '作業時間', value: 'voice' },
-                { name: 'リアクション数', value: 'reaction' },
-                { name: 'メッセージ数', value: 'message' }
-            )
-    ),
+        .setName('rank')
+        .setDescription('ランキング')
+        .addStringOption(option =>
+            option
+                .setName('type')
+                .setDescription('ランキング種類')
+                .setRequired(false)
+                .addChoices(
+                    { name: '所持ポイント', value: 'points' },
+                    { name: 'レベル', value: 'level' },
+                    { name: '作業時間', value: 'voice' },
+                    { name: 'リアクション数', value: 'reaction' },
+                    { name: 'メッセージ数', value: 'message' },
+                    { name: '爆発回数', value: 'explosion' }
+                )
+        ),
+
     new SlashCommandBuilder()
-        .setName('shop')
+        .setName('i-shop')
         .setDescription('ショップ'),
 
     new SlashCommandBuilder()
-        .setName('buy')
+        .setName('i-buy')
         .setDescription('アイテム購入')
         .addStringOption(option =>
             option
@@ -431,11 +461,11 @@ const commands = [
         ),
 
     new SlashCommandBuilder()
-        .setName('gacha')
+        .setName('g-gacha')
         .setDescription('ガチャ'),
 
     new SlashCommandBuilder()
-        .setName('addticket')
+        .setName('m-addt')
         .setDescription('管理者専用：ガチャチケットを追加')
         .addUserOption(option =>
             option
@@ -451,7 +481,7 @@ const commands = [
         ),
 
     new SlashCommandBuilder()
-        .setName('give')
+        .setName('p-give')
         .setDescription('相手にポイントを譲渡')
         .addUserOption(option =>
             option
@@ -467,7 +497,7 @@ const commands = [
         ),
 
     new SlashCommandBuilder()
-        .setName('addpoint')
+        .setName('m-addp')
         .setDescription('管理者専用：ポイントを追加')
         .addUserOption(option =>
             option
@@ -483,7 +513,7 @@ const commands = [
         ),
 
     new SlashCommandBuilder()
-        .setName('role_addpoint')
+        .setName('m-roleap')
         .setDescription('管理者専用：指定ロールの全員にポイントを付与')
         .addRoleOption(option =>
             option
@@ -505,7 +535,7 @@ const commands = [
         ),
 
     new SlashCommandBuilder()
-        .setName('displayrole')
+        .setName('r-disp')
         .setDescription('表示用ロールを付け替え')
         .addStringOption(option =>
             option
@@ -531,7 +561,7 @@ const commands = [
         .setDescription('直近20件のポイントログを表示'),
 
     new SlashCommandBuilder()
-        .setName('doubleup')
+        .setName('g-double')
         .setDescription('ポイントを賭けてダブルアップ')
         .addNumberOption(option =>
             option
@@ -541,7 +571,7 @@ const commands = [
         ),
 
     new SlashCommandBuilder()
-        .setName('derby_start')
+        .setName('db-start')
         .setDescription('500ptを使ってダービーを開始')
         .addStringOption(option =>
             option
@@ -551,11 +581,11 @@ const commands = [
         ),
 
     new SlashCommandBuilder()
-        .setName('derby_list')
+        .setName('db-list')
         .setDescription('開催中のダービー一覧'),
 
     new SlashCommandBuilder()
-        .setName('join')
+        .setName('db-join')
         .setDescription('開催中のダービーに参加')
         .addStringOption(option =>
             option
@@ -571,7 +601,7 @@ const commands = [
         ),
 
     new SlashCommandBuilder()
-        .setName('result')
+        .setName('db-result')
         .setDescription('ダービー結果を確定')
         .addStringOption(option =>
             option
@@ -593,7 +623,7 @@ const commands = [
             option
                 .setName('mode')
                 .setDescription('ラッキーカラーの種類')
-                .setRequired(false)
+                .setRequired(true)
                 .addChoices(
                     { name: '通常カラー', value: 'single' },
                     { name: 'グラデーション', value: 'gradient' }
@@ -605,7 +635,7 @@ const commands = [
         .setDescription('このチャンネルの爆弾ON/OFF'),
 
     new SlashCommandBuilder()
-        .setName('colorrole_set')
+        .setName('cr-set')
         .setDescription('管理者：カラー設定ロールを登録')
         .addUserOption(option =>
             option
@@ -621,51 +651,43 @@ const commands = [
         ),
 
     new SlashCommandBuilder()
-        .setName('colorrole_detach')
+        .setName('cr-rem')
         .setDescription('自分のカラー用ロールを一時解除'),
 
     new SlashCommandBuilder()
-        .setName('favoritecolor')
-        .setDescription('お気に入りカラーを管理')
-        .addSubcommand(subcommand =>
-            subcommand
-                .setName('list')
-                .setDescription('保存済みカラーを表示')
-        )
-        .addSubcommand(subcommand =>
-            subcommand
-                .setName('set')
-                .setDescription('保存済みカラーに変更')
-                .addIntegerOption(option =>
-                    option
-                        .setName('number')
-                        .setDescription('1 または 2')
-                        .setRequired(true)
-                        .addChoices(
-                            { name: '1', value: 1 },
-                            { name: '2', value: 2 }
-                        )
-                )
-        )
-        .addSubcommand(subcommand =>
-            subcommand
-                .setName('remove')
-                .setDescription('保存済みカラーを削除')
-                .addIntegerOption(option =>
-                    option
-                        .setName('number')
-                        .setDescription('1 または 2')
-                        .setRequired(true)
-                        .addChoices(
-                            { name: '1', value: 1 },
-                            { name: '2', value: 2 }
-                        )
+        .setName('favlist')
+        .setDescription('保存済みお気に入りカラーを表示'),
+
+    new SlashCommandBuilder()
+        .setName('favset')
+        .setDescription('保存済みカラーに変更')
+        .addIntegerOption(option =>
+            option
+                .setName('number')
+                .setDescription('1 または 2')
+                .setRequired(true)
+                .addChoices(
+                    { name: '1', value: 1 },
+                    { name: '2', value: 2 }
                 )
         ),
 
+    new SlashCommandBuilder()
+        .setName('favrem')
+        .setDescription('保存済みカラーを削除')
+        .addIntegerOption(option =>
+            option
+                .setName('number')
+                .setDescription('1 または 2')
+                .setRequired(true)
+                .addChoices(
+                    { name: '1', value: 1 },
+                    { name: '2', value: 2 }
+                )
+        ),
 
     new SlashCommandBuilder()
-        .setName('debug_reset_daily')
+        .setName('m-reset')
         .setDescription('管理者専用：一日一回制限をリセット')
         .addUserOption(option =>
             option
@@ -675,7 +697,7 @@ const commands = [
         ),
 
     new SlashCommandBuilder()
-        .setName('daily_notify')
+        .setName('d-notify')
         .setDescription('デイリーおみくじ通知の受け取り設定')
         .addStringOption(option =>
             option
@@ -863,6 +885,9 @@ client.on('messageCreate', async message => {
                 const seconds =
                     timeoutList[Math.floor(Math.random() * timeoutList.length)];
 
+                data.users[message.author.id].explosionCount =
+                    (data.users[message.author.id].explosionCount || 0) + 1;
+
                 await message.channel.send(
                     `${explosionGif}\n` +
                     `<@${message.author.id}>じゃ！ \n` +
@@ -1045,7 +1070,7 @@ client.on('interactionCreate', async interaction => {
 
             if (user.favoriteColors.length >= 2) {
                 return interaction.reply({
-                    content: 'お気に入りカラーは最大2つまでです。\n/favoritecolor remove で先に削除してください。',
+                    content: 'お気に入りカラーは最大2つまでです。\n/favrem で先に削除してください。',
                     ephemeral: true
                 });
             }
@@ -1201,7 +1226,7 @@ client.on('interactionCreate', async interaction => {
         });
     }
 
-    if (interaction.commandName === 'daily_notify') {
+    if (interaction.commandName === 'd-notify') {
         const mode = interaction.options.getString('mode');
 
         data.users[userId].dailyReminderMuted = mode === 'off';
@@ -1218,7 +1243,7 @@ client.on('interactionCreate', async interaction => {
     }
 
 
-    if (interaction.commandName === 'debug_reset_daily') {
+    if (interaction.commandName === 'm-reset') {
         if (
             !interaction.member.permissions.has(
                 PermissionsBitField.Flags.Administrator
@@ -1247,7 +1272,7 @@ client.on('interactionCreate', async interaction => {
         });
     }
 
-    if (interaction.commandName === 'colorrole_set') {
+    if (interaction.commandName === 'cr-set') {
         if (
             !interaction.member.permissions.has(
                 PermissionsBitField.Flags.Administrator
@@ -1287,7 +1312,7 @@ client.on('interactionCreate', async interaction => {
 
 if (
     interaction.commandName ===
-    'colorrole_detach'
+    'cr-rem'
 ) {
 
     const target = interaction.user;
@@ -1472,22 +1497,29 @@ if (
                 .map(([name, value]) => `**${name}**：${value}`)
                 .join('\n');
 
+        const omikujiEmbed = createEmbed(
+            '🎴 今日のおみくじ',
+            omikujiDescription,
+            {
+                color: luckyColor.hex
+            }
+        ).setAuthor({
+            name: `${getInteractionDisplayName(interaction)} の今日のおみくじ`,
+            iconURL: interaction.user.displayAvatarURL({ size: 128 })
+        });
+
         return interaction.reply({
-            embeds: [
-                createEmbed(
-                    `🎴 ${interaction.user.username} の今日のおみくじ`,
-                    omikujiDescription,
-                    {
-                        color: luckyColor.hex
-                    }
-                )
-            ],
+            content: `<@${userId}>`,
+            embeds: [omikujiEmbed],
             components
         });
     }
 
-    if (interaction.commandName === 'favoritecolor') {
-        const subcommand = interaction.options.getSubcommand();
+    if (
+        interaction.commandName === 'favlist' ||
+        interaction.commandName === 'favset' ||
+        interaction.commandName === 'favrem'
+    ) {
         const user = data.users[userId];
 
         if (!user.favoriteColors) user.favoriteColors = [];
@@ -1502,7 +1534,7 @@ if (
             });
         }
 
-        if (subcommand === 'list') {
+        if (interaction.commandName === 'favlist') {
             if (user.favoriteColors.length === 0) {
                 return interaction.reply({
                     content: '保存済みのお気に入りカラーはありません。',
@@ -1522,7 +1554,7 @@ if (
             });
         }
 
-        if (subcommand === 'remove') {
+        if (interaction.commandName === 'favrem') {
             const number = interaction.options.getInteger('number');
             const index = number - 1;
 
@@ -1542,7 +1574,7 @@ if (
             });
         }
 
-        if (subcommand === 'set') {
+        if (interaction.commandName === 'favset') {
             const number = interaction.options.getInteger('number');
             const index = number - 1;
             const color = user.favoriteColors[index];
@@ -1650,7 +1682,7 @@ if (
         }
     }
 
-    if (interaction.commandName === 'balance') {
+    if (interaction.commandName === 'stats') {
         const user = data.users[userId];
 
         const voiceMinutesTotal = user.voiceMinutesTotal || 0;
@@ -1659,21 +1691,14 @@ if (
 
         return interaction.reply({
             content:
-                `💰 所持pt: ${user.points.toFixed(1)}pt
-` +
-                `🎫 ガチャチケット: ${user.tickets || 0}枚
-
-` +
-                `⭐ Lv.${user.level}
-` +
-                `📈 Lv用累計pt: ${user.levelPoints.toFixed(1)}pt
-
-` +
-                `🎤 作業時間: ${hours}時間${minutes}分
-` +
-                `👍 リアクション数: ${user.reactionCount || 0}回
-` +
-                `💬 メッセージ数: ${user.messageCount || 0}通`
+                `💰 所持pt: ${user.points.toFixed(1)}pt\n` +
+                `🎫 ガチャチケット: ${user.tickets || 0}枚\n\n` +
+                `⭐ Lv.${user.level}\n` +
+                `📈 Lv用累計pt: ${user.levelPoints.toFixed(1)}pt\n\n` +
+                `🎤 作業時間: ${hours}時間${minutes}分\n` +
+                `👍 リアクション数: ${user.reactionCount || 0}回\n` +
+                `💬 メッセージ数: ${user.messageCount || 0}通\n` +
+                `💥 爆破された回数: ${user.explosionCount || 0}回`
         });
     }
 
@@ -1685,7 +1710,8 @@ if (
             level: 'レベル',
             voice: '作業時間',
             reaction: 'リアクション数',
-            message: 'メッセージ数'
+            message: 'メッセージ数',
+            explosion: '爆発回数'
         };
 
         const getValue = (userData) => {
@@ -1694,12 +1720,15 @@ if (
             if (type === 'voice') return userData.voiceMinutesTotal || 0;
             if (type === 'reaction') return userData.reactionCount || 0;
             if (type === 'message') return userData.messageCount || 0;
+            if (type === 'explosion') return userData.explosionCount || 0;
             return userData.points || 0;
         };
 
-        const formatValue = (value) => {
+        const formatValue = (value, userData) => {
             if (type === 'points') return `${value.toFixed(1)}pt`;
-            if (type === 'level') return `Lv.${value}`;
+            if (type === 'level') {
+                return `Lv.${userData.level || 0} / Lv用pt ${Number(userData.levelPoints || 0).toFixed(1)}pt`;
+            }
             if (type === 'voice') {
                 const hours = Math.floor(value / 60);
                 const minutes = value % 60;
@@ -1707,6 +1736,7 @@ if (
             }
             if (type === 'reaction') return `${value}回`;
             if (type === 'message') return `${value}通`;
+            if (type === 'explosion') return `${value}回`;
             return String(value);
         };
 
@@ -1718,12 +1748,14 @@ if (
         let text = `🏆 ${labels[type]}ランキング\n\n`;
 
         for (let i = 0; i < ranking.length; i++) {
-            const rankedUser = await client.users.fetch(ranking[i][0]);
-            const value = getValue(ranking[i][1]);
+            const rankedUserId = ranking[i][0];
+            const rankedUserData = ranking[i][1];
+            const displayName = await getDisplayName(interaction.guild, rankedUserId);
+            const value = getValue(rankedUserData);
 
             text +=
-                `${i + 1}. ${rankedUser.username} - ` +
-                `${formatValue(value)}\n`;
+                `${i + 1}. ${displayName} - ` +
+                `${formatValue(value, rankedUserData)}\n`;
         }
 
         return interaction.reply({
@@ -1731,7 +1763,7 @@ if (
         });
     }
 
-    if (interaction.commandName === 'shop') {
+    if (interaction.commandName === 'i-shop') {
         let text = '🛒 SHOP\n\n';
 
         for (const [name, item] of Object.entries(shop)) {
@@ -1745,7 +1777,7 @@ if (
         return interaction.reply({ content: text });
     }
 
-    if (interaction.commandName === 'buy') {
+    if (interaction.commandName === 'i-buy') {
         const itemName =
             interaction.options.getString('item');
 
@@ -1820,16 +1852,16 @@ if (
         }
 
         return interaction.reply({
-            content: '購入成功！'
+            content: `購入成功！ <@&${item.roleId}> を購入しました。`
         });
     }
 
-    if (interaction.commandName === 'gacha') {
+    if (interaction.commandName === 'g-gacha') {
         if (!data.users[userId].tickets || data.users[userId].tickets <= 0) {
             return interaction.reply({
                 content:
                     'ガチャチケットがありません。\n' +
-                    '/shop から gachaTicket を購入してください。',
+                    '/i-shop から gachaTicket を購入してください。',
                 ephemeral: true
             });
         }
@@ -1880,7 +1912,7 @@ if (
         });
     }
 
-    if (interaction.commandName === 'addticket') {
+    if (interaction.commandName === 'm-addt') {
         if (
             !interaction.member.permissions.has(
                 PermissionsBitField.Flags.Administrator
@@ -1920,7 +1952,7 @@ if (
         });
     }
 
-    if (interaction.commandName === 'give') {
+    if (interaction.commandName === 'p-give') {
         const target =
             interaction.options.getUser('user');
 
@@ -1996,7 +2028,7 @@ if (
         });
     }
 
-    if (interaction.commandName === 'addpoint') {
+    if (interaction.commandName === 'm-addp') {
         if (
             !interaction.member.permissions.has(
                 PermissionsBitField.Flags.Administrator
@@ -2036,7 +2068,7 @@ if (
         });
     }
 
-    if (interaction.commandName === 'role_addpoint') {
+    if (interaction.commandName === 'm-roleap') {
         if (
             !interaction.member.permissions.has(
                 PermissionsBitField.Flags.Administrator
@@ -2109,7 +2141,7 @@ if (
         });
     }
 
-    if (interaction.commandName === 'displayrole') {
+    if (interaction.commandName === 'r-disp') {
         const selected = interaction.options.getString('role');
 
         if (!settings.DISPLAY_ROLES) {
@@ -2197,7 +2229,7 @@ if (
                 return interaction.reply({
                     content:
                         `この表示ロール「${selected}」はまだ購入していません。\n` +
-                        `/shop で購入してから使用してください。`,
+                        `/i-shop で購入してから使用してください。`,
                     ephemeral: true
                 });
             }
@@ -2240,7 +2272,7 @@ if (
         });
     }
 
-    if (interaction.commandName === 'doubleup') {
+    if (interaction.commandName === 'g-double') {
         const amount = interaction.options.getNumber('amount');
 
         if (!amount || amount <= 0) {
@@ -2300,7 +2332,7 @@ if (
         });
     }
 
-    if (interaction.commandName === 'derby_start') {
+    if (interaction.commandName === 'db-start') {
         const title = interaction.options.getString('title');
 
         if (data.users[userId].points < 500) {
@@ -2340,11 +2372,11 @@ if (
                 `🏇 ダービーを開始しました！\n` +
                 `ID: ${derbyId}\n` +
                 `タイトル: ${title}\n` +
-                `/join id:${derbyId} amount:ポイント で参加できます。`
+                `/db-join id:${derbyId} amount:ポイント で参加できます。`
         });
     }
 
-    if (interaction.commandName === 'derby_list') {
+    if (interaction.commandName === 'db-list') {
         const openDerbies =
             Object.values(data.derbies)
                 .filter(derby => derby.status === 'open');
@@ -2371,7 +2403,7 @@ if (
         });
     }
 
-    if (interaction.commandName === 'join') {
+    if (interaction.commandName === 'db-join') {
         const derbyId = interaction.options.getString('id');
         const amount = interaction.options.getNumber('amount');
 
@@ -2430,7 +2462,7 @@ if (
         });
     }
 
-    if (interaction.commandName === 'result') {
+    if (interaction.commandName === 'db-result') {
         const derbyId = interaction.options.getString('id');
         const winnersRaw = interaction.options.getString('winners');
 

@@ -65,6 +65,7 @@ function ensureUser(data, userId) {
     if (user.displayRole === undefined) user.displayRole = null;
 
     if (user.messageCount === undefined) user.messageCount = 0;
+    if (user.explosionCount === undefined) user.explosionCount = 0;
     if (user.reactionCount === undefined) user.reactionCount = 0;
     if (user.voiceMinutesTotal === undefined) user.voiceMinutesTotal = 0;
     if (user.voicePointMinutes === undefined) user.voicePointMinutes = 0;
