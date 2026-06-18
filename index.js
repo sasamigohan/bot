@@ -345,6 +345,239 @@ function getInteractionDisplayName(interaction) {
         'Unknown';
 }
 
+
+function createShortId(prefix = '') {
+    return `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function truncateText(text, maxLength = 80) {
+    const value = String(text || '');
+    return value.length > maxLength ? value.slice(0, maxLength - 1) + '…' : value;
+}
+
+function getPercent(count, total) {
+    if (!total) return '0.0';
+    return ((count / total) * 100).toFixed(1);
+}
+
+function getJstParts(date = new Date()) {
+    const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+
+    return {
+        year: jst.getUTCFullYear(),
+        month: jst.getUTCMonth() + 1,
+        day: jst.getUTCDate(),
+        hour: jst.getUTCHours(),
+        minute: jst.getUTCMinutes()
+    };
+}
+
+function formatJstDateTime(value) {
+    if (!value) return '未設定';
+
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return '不明';
+
+    const p = getJstParts(date);
+
+    return (
+        `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')} ` +
+        `${String(p.hour).padStart(2, '0')}:${String(p.minute).padStart(2, '0')} JST`
+    );
+}
+
+function parseAnonPollEndTime(rawInput) {
+    const input = String(rawInput || '').trim();
+
+    if (!input) {
+        return { ok: true, endAt: null };
+    }
+
+    const now = new Date();
+
+    const relativeMatch = input.match(/^(\d{1,4})\s*([mhd分時日])$/i);
+    if (relativeMatch) {
+        const amount = Number(relativeMatch[1]);
+        const unit = relativeMatch[2].toLowerCase();
+        let ms = 0;
+
+        if (unit === 'm' || unit === '分') ms = amount * 60 * 1000;
+        if (unit === 'h' || unit === '時') ms = amount * 60 * 60 * 1000;
+        if (unit === 'd' || unit === '日') ms = amount * 24 * 60 * 60 * 1000;
+
+        if (!ms) {
+            return { ok: false, error: '終了時間の単位が不正です。' };
+        }
+
+        return { ok: true, endAt: new Date(now.getTime() + ms).toISOString() };
+    }
+
+    const dateTimeMatch = input.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})[ T](\d{1,2}):(\d{2})$/);
+    if (dateTimeMatch) {
+        const [, y, mo, d, h, mi] = dateTimeMatch.map(Number);
+        const endDate = new Date(Date.UTC(y, mo - 1, d, h - 9, mi, 0));
+
+        if (Number.isNaN(endDate.getTime())) {
+            return { ok: false, error: '終了日時を読み取れませんでした。' };
+        }
+
+        return { ok: true, endAt: endDate.toISOString() };
+    }
+
+    const timeMatch = input.match(/^(\d{1,2}):(\d{2})$/);
+    if (timeMatch) {
+        const hour = Number(timeMatch[1]);
+        const minute = Number(timeMatch[2]);
+
+        if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+            return { ok: false, error: '時刻は 00:00〜23:59 の範囲で指定してください。' };
+        }
+
+        const p = getJstParts(now);
+        let endDate = new Date(Date.UTC(p.year, p.month - 1, p.day, hour - 9, minute, 0));
+
+        if (endDate.getTime() <= now.getTime()) {
+            endDate = new Date(endDate.getTime() + 24 * 60 * 60 * 1000);
+        }
+
+        return { ok: true, endAt: endDate.toISOString() };
+    }
+
+    return {
+        ok: false,
+        error: '終了時間は `23:00`、`2026-06-18 23:00`、`30m`、`2h`、`1d` の形式で指定してください。'
+    };
+}
+
+function isAnonPollExpired(poll) {
+    return Boolean(
+        poll &&
+        poll.endAt &&
+        !poll.closed &&
+        new Date(poll.endAt).getTime() <= Date.now()
+    );
+}
+
+function closeAnonPoll(poll, reason = 'time') {
+    if (!poll || poll.closed) return false;
+
+    poll.closed = true;
+    poll.closeReason = reason;
+    poll.closedAt = new Date().toISOString();
+
+    return true;
+}
+
+function buildJoinVoteEmbed(vote) {
+    const statusText =
+        vote.closed
+            ? (vote.result === 'approve' ? '許可に決定' : '許可されませんでした')
+            : '投票受付中';
+
+    return createEmbed(
+        '🗳️ 参加許可投票',
+        `対象者: <@${vote.targetUserId}>\n` +
+        `対象ロール: <@&${vote.roleId}>\n` +
+        (vote.reason ? `内容: ${vote.reason}\n` : '') +
+        `状態: ${statusText}\n\n` +
+        `✅ 許可: ${vote.approveCount}/${vote.approveThreshold}\n` +
+        `❌ 許可しない: ${vote.denyCount}/${vote.denyThreshold}\n` +
+        `投票対象人数: ${vote.totalVoters}人\n\n` +
+        `※誰がどちらを押したかは表示されません。`,
+        {
+            color: vote.closed
+                ? (vote.result === 'approve' ? 0x57F287 : 0xED4245)
+                : 0x5865F2
+        }
+    );
+}
+
+function buildJoinVoteRow(voteId) {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`joinvote_approve_${voteId}`)
+            .setLabel('許可')
+            .setStyle(ButtonStyle.Success),
+
+        new ButtonBuilder()
+            .setCustomId(`joinvote_deny_${voteId}`)
+            .setLabel('許可しない')
+            .setStyle(ButtonStyle.Danger)
+    );
+}
+
+function buildAnonPollEmbed(poll) {
+    const totalVotes =
+        poll.counts.reduce((sum, count) => sum + Number(count || 0), 0);
+
+    const statusText = poll.closed
+        ? '終了'
+        : (poll.endAt ? `受付中 / 終了予定: ${formatJstDateTime(poll.endAt)}` : '受付中');
+
+    let description =
+        `作成者: <@${poll.creatorId}>\n` +
+        `状態: ${statusText}\n` +
+        `総投票数: ${totalVotes}票\n\n`;
+
+    for (let i = 0; i < poll.choices.length; i++) {
+        const count = Number(poll.counts[i] || 0);
+        description +=
+            `${i + 1}. ${poll.choices[i]}\n` +
+            `　${count}票 / ${getPercent(count, totalVotes)}%\n`;
+    }
+
+    if (poll.closed) {
+        description += `\n終了時刻: ${formatJstDateTime(poll.closedAt || poll.endAt)}`;
+    }
+
+    description += '\n※誰がどれを押したかは表示されません。';
+
+    return createEmbed(
+        `📊 ${poll.title}`,
+        description,
+        { color: poll.closed ? 0x747F8D : 0x5865F2 }
+    );
+}
+
+function buildAnonPollRows(pollId, poll) {
+    const rows = [];
+    let currentRow = new ActionRowBuilder();
+    const disabled = Boolean(poll.closed);
+
+    for (let i = 0; i < poll.choices.length; i++) {
+        if (i > 0 && i % 5 === 0) {
+            rows.push(currentRow);
+            currentRow = new ActionRowBuilder();
+        }
+
+        currentRow.addComponents(
+            new ButtonBuilder()
+                .setCustomId(`anonpoll_vote_${pollId}_${i}`)
+                .setLabel(`${i + 1}. ${truncateText(poll.choices[i], 70)}`)
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(disabled)
+        );
+    }
+
+    rows.push(currentRow);
+    return rows;
+}
+
+function buildHalfGameRow(ownerId) {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`half_A_${ownerId}`)
+            .setLabel('A')
+            .setStyle(ButtonStyle.Primary),
+
+        new ButtonBuilder()
+            .setCustomId(`half_B_${ownerId}`)
+            .setLabel('B')
+            .setStyle(ButtonStyle.Primary)
+    );
+}
+
+
 function isBombMutedChannel(data, channel) {
     if (!data.mutedBombChannels) {
         data.mutedBombChannels = [];
@@ -442,7 +675,8 @@ const commands = [
                     { name: '作業時間', value: 'voice' },
                     { name: 'リアクション数', value: 'reaction' },
                     { name: 'メッセージ数', value: 'message' },
-                    { name: '爆発回数', value: 'explosion' }
+                    { name: '爆発回数', value: 'explosion' },
+                    { name: '1/2^n 連続成功数', value: 'half' }
                 )
         ),
 
@@ -696,6 +930,109 @@ const commands = [
                 .setRequired(true)
         ),
 
+
+    new SlashCommandBuilder()
+        .setName('m-joinvote')
+        .setDescription('管理者専用：参加許可投票を作成')
+        .addUserOption(option =>
+            option
+                .setName('user')
+                .setDescription('参加を許可するか投票する対象ユーザー')
+                .setRequired(true)
+        )
+        .addRoleOption(option =>
+            option
+                .setName('role')
+                .setDescription('投票対象兼、許可時に付与するロール')
+                .setRequired(true)
+        )
+        .addStringOption(option =>
+            option
+                .setName('reason')
+                .setDescription('投票の説明・理由')
+                .setRequired(false)
+        ),
+
+    new SlashCommandBuilder()
+        .setName('anonpoll')
+        .setDescription('匿名アンケートを作成')
+        .addStringOption(option =>
+            option
+                .setName('title')
+                .setDescription('アンケートタイトル')
+                .setRequired(true)
+        )
+        .addStringOption(option =>
+            option
+                .setName('choice1')
+                .setDescription('選択肢1')
+                .setRequired(true)
+        )
+        .addStringOption(option =>
+            option
+                .setName('choice2')
+                .setDescription('選択肢2')
+                .setRequired(true)
+        )
+        .addStringOption(option =>
+            option
+                .setName('choice3')
+                .setDescription('選択肢3')
+                .setRequired(false)
+        )
+        .addStringOption(option =>
+            option
+                .setName('choice4')
+                .setDescription('選択肢4')
+                .setRequired(false)
+        )
+        .addStringOption(option =>
+            option
+                .setName('choice5')
+                .setDescription('選択肢5')
+                .setRequired(false)
+        )
+        .addStringOption(option =>
+            option
+                .setName('choice6')
+                .setDescription('選択肢6')
+                .setRequired(false)
+        )
+        .addStringOption(option =>
+            option
+                .setName('choice7')
+                .setDescription('選択肢7')
+                .setRequired(false)
+        )
+        .addStringOption(option =>
+            option
+                .setName('choice8')
+                .setDescription('選択肢8')
+                .setRequired(false)
+        )
+        .addStringOption(option =>
+            option
+                .setName('choice9')
+                .setDescription('選択肢9')
+                .setRequired(false)
+        )
+        .addStringOption(option =>
+            option
+                .setName('choice10')
+                .setDescription('選択肢10')
+                .setRequired(false)
+        )
+        .addStringOption(option =>
+            option
+                .setName('end')
+                .setDescription('終了時間。例: 23:00 / 2026-06-18 23:00 / 30m / 2h / 1d')
+                .setRequired(false)
+        ),
+
+    new SlashCommandBuilder()
+        .setName('g-half')
+        .setDescription('1/2^nゲームを開始'),
+
     new SlashCommandBuilder()
         .setName('d-notify')
         .setDescription('デイリーおみくじ通知の受け取り設定')
@@ -728,6 +1065,7 @@ client.once('clientReady', async () => {
 
     setInterval(handleVoicePoints, 60 * 1000);
     setInterval(handleDailyReminder, 60 * 1000);
+    setInterval(handleAnonPollDeadlines, 60 * 1000);
 });
 
 async function handleVoicePoints() {
@@ -788,6 +1126,45 @@ async function handleVoicePoints() {
     }
 
     saveData(data);
+}
+
+async function handleAnonPollDeadlines() {
+    const data = loadData();
+
+    if (!data.anonPolls) {
+        data.anonPolls = {};
+    }
+
+    let changed = false;
+
+    for (const poll of Object.values(data.anonPolls)) {
+        if (!isAnonPollExpired(poll)) {
+            continue;
+        }
+
+        closeAnonPoll(poll, 'time');
+        changed = true;
+
+        if (!poll.channelId || !poll.messageId) {
+            continue;
+        }
+
+        try {
+            const channel = await client.channels.fetch(poll.channelId);
+            const message = await channel.messages.fetch(poll.messageId);
+
+            await message.edit({
+                embeds: [buildAnonPollEmbed(poll)],
+                components: []
+            });
+        } catch (err) {
+            console.error(err);
+        }
+    }
+
+    if (changed) {
+        saveData(data);
+    }
 }
 
 async function handleDailyReminder() {
@@ -969,6 +1346,214 @@ client.on('interactionCreate', async interaction => {
             return interaction.reply({
                 content: '今後、デイリーおみくじ未実行通知を受け取らないようにしました。',
                 ephemeral: true
+            });
+        }
+
+
+        if (interaction.customId.startsWith('joinvote_')) {
+            const parts = interaction.customId.split('_');
+            const action = parts[1];
+            const voteId = parts[2];
+
+            if (!data.joinVotes) data.joinVotes = {};
+            const vote = data.joinVotes[voteId];
+
+            if (!vote) {
+                return interaction.reply({
+                    content: 'この投票データが見つかりません。',
+                    ephemeral: true
+                });
+            }
+
+            if (vote.closed) {
+                return interaction.reply({
+                    content: 'この投票はすでに終了しています。',
+                    ephemeral: true
+                });
+            }
+
+            const voterId = interaction.user.id;
+            const voterMember = await interaction.guild.members.fetch(voterId);
+
+            if (!voterMember.roles.cache.has(vote.roleId)) {
+                return interaction.reply({
+                    content: 'この投票に参加できる対象ロールを持っていません。',
+                    ephemeral: true
+                });
+            }
+
+            if (vote.voters[voterId]) {
+                return interaction.reply({
+                    content: 'すでに投票済みです。',
+                    ephemeral: true
+                });
+            }
+
+            vote.voters[voterId] = action;
+
+            if (action === 'approve') {
+                vote.approveCount += 1;
+            } else {
+                vote.denyCount += 1;
+            }
+
+            let resultMessage = null;
+
+            if (vote.approveCount >= vote.approveThreshold) {
+                vote.closed = true;
+                vote.result = 'approve';
+
+                try {
+                    const targetMember =
+                        await interaction.guild.members.fetch(vote.targetUserId);
+
+                    if (!targetMember.roles.cache.has(vote.roleId)) {
+                        await targetMember.roles.add(vote.roleId);
+                    }
+                } catch (err) {
+                    console.error(err);
+                }
+
+                resultMessage =
+                    `投票の結果、<@${vote.targetUserId}> は <@&${vote.roleId}> への参加を許可に決定いたしました。`;
+            } else if (vote.denyCount >= vote.denyThreshold) {
+                vote.closed = true;
+                vote.result = 'deny';
+
+                resultMessage =
+                    `投票の結果、<@${vote.targetUserId}> の <@&${vote.roleId}> への参加は許可されませんでした。`;
+            }
+
+            saveData(data);
+
+            await interaction.update({
+                embeds: [buildJoinVoteEmbed(vote)],
+                components: vote.closed ? [] : [buildJoinVoteRow(voteId)]
+            });
+
+            if (resultMessage) {
+                await interaction.channel.send(resultMessage);
+            }
+
+            return;
+        }
+
+        if (interaction.customId.startsWith('anonpoll_vote_')) {
+            const parts = interaction.customId.split('_');
+            const pollId = parts[2];
+            const choiceIndex = Number(parts[3]);
+
+            if (!data.anonPolls) data.anonPolls = {};
+            const poll = data.anonPolls[pollId];
+
+            if (!poll) {
+                return interaction.reply({
+                    content: 'このアンケートデータが見つかりません。',
+                    ephemeral: true
+                });
+            }
+
+            if (!Number.isInteger(choiceIndex) || !poll.choices[choiceIndex]) {
+                return interaction.reply({
+                    content: '存在しない選択肢です。',
+                    ephemeral: true
+                });
+            }
+
+            if (poll.closed || isAnonPollExpired(poll)) {
+                closeAnonPoll(poll, poll.closed ? (poll.closeReason || 'closed') : 'time');
+                saveData(data);
+
+                await interaction.update({
+                    embeds: [buildAnonPollEmbed(poll)],
+                    components: []
+                });
+
+                return interaction.followUp({
+                    content: 'このアンケートは終了しています。',
+                    ephemeral: true
+                });
+            }
+
+            if (poll.voters[interaction.user.id] !== undefined) {
+                return interaction.reply({
+                    content: 'すでに投票済みです。',
+                    ephemeral: true
+                });
+            }
+
+            poll.voters[interaction.user.id] = choiceIndex;
+            poll.counts[choiceIndex] += 1;
+
+            saveData(data);
+
+            return interaction.update({
+                embeds: [buildAnonPollEmbed(poll)],
+                components: poll.closed ? [] : buildAnonPollRows(pollId, poll)
+            });
+        }
+
+        if (interaction.customId.startsWith('half_')) {
+            const parts = interaction.customId.split('_');
+            const action = parts[1];
+            const ownerId = parts[2];
+
+            if (interaction.user.id !== ownerId) {
+                return interaction.reply({
+                    content: 'これはあなたの1/2^nゲームではありません。',
+                    ephemeral: true
+                });
+            }
+
+            ensureUser(data, ownerId);
+
+            if (!data.halfGames) data.halfGames = {};
+            const game = data.halfGames[ownerId];
+
+            if (!game || !game.active) {
+                return interaction.reply({
+                    content: 'この1/2^nゲームは終了しています。',
+                    ephemeral: true
+                });
+            }
+
+            const answer = Math.random() < 0.5 ? 'A' : 'B';
+
+            if (action === answer) {
+                game.current += 1;
+
+                if ((data.users[ownerId].halfBest || 0) < game.current) {
+                    data.users[ownerId].halfBest = game.current;
+                }
+
+                saveData(data);
+
+                return interaction.update({
+                    content:
+                        `🎯 成功！答えは ${answer} でした。\n` +
+                        `現在 ${game.current} 連続成功中です。\n` +
+                        `自己ベスト: ${data.users[ownerId].halfBest || 0}連続\n` +
+                        `次もAかBを選んでください。`,
+                    components: [buildHalfGameRow(ownerId)]
+                });
+            }
+
+            const finalStreak = game.current;
+
+            if ((data.users[ownerId].halfBest || 0) < finalStreak) {
+                data.users[ownerId].halfBest = finalStreak;
+            }
+
+            delete data.halfGames[ownerId];
+
+            saveData(data);
+
+            return interaction.update({
+                content:
+                    `💥 失敗！答えは ${answer} でした。\n` +
+                    `最終記録: ${finalStreak}連続成功\n` +
+                    `自己ベスト: ${data.users[ownerId].halfBest || 0}連続`,
+                components: []
             });
         }
 
@@ -1698,7 +2283,8 @@ if (
                 `🎤 作業時間: ${hours}時間${minutes}分\n` +
                 `👍 リアクション数: ${user.reactionCount || 0}回\n` +
                 `💬 メッセージ数: ${user.messageCount || 0}通\n` +
-                `💥 爆破された回数: ${user.explosionCount || 0}回`
+                `💥 爆破された回数: ${user.explosionCount || 0}回\n` +
+                `🎲 1/2^n自己ベスト: ${user.halfBest || 0}連続`
         });
     }
 
@@ -1711,7 +2297,8 @@ if (
             voice: '作業時間',
             reaction: 'リアクション数',
             message: 'メッセージ数',
-            explosion: '爆発回数'
+            explosion: '爆発回数',
+            half: '1/2^n 連続成功数'
         };
 
         const getValue = (userData) => {
@@ -1721,6 +2308,7 @@ if (
             if (type === 'reaction') return userData.reactionCount || 0;
             if (type === 'message') return userData.messageCount || 0;
             if (type === 'explosion') return userData.explosionCount || 0;
+            if (type === 'half') return userData.halfBest || 0;
             return userData.points || 0;
         };
 
@@ -1737,6 +2325,7 @@ if (
             if (type === 'reaction') return `${value}回`;
             if (type === 'message') return `${value}通`;
             if (type === 'explosion') return `${value}回`;
+            if (type === 'half') return `${value}連続`;
             return String(value);
         };
 
@@ -2565,6 +3154,194 @@ if (
                 `手数料: ${fee.toFixed(1)}pt → <@${derby.ownerId}>\n` +
                 `賞金: ${prizePerWinner.toFixed(1)}pt × ${winnerIds.length}人\n` +
                 `勝者: ${winnerIds.map(id => `<@${id}>`).join(' ')}`
+        });
+    }
+
+
+    if (interaction.commandName === 'm-joinvote') {
+        if (
+            !interaction.member.permissions.has(
+                PermissionsBitField.Flags.Administrator
+            )
+        ) {
+            return interaction.reply({
+                content: '管理者専用です。',
+                ephemeral: true
+            });
+        }
+
+        const target = interaction.options.getUser('user');
+        const role = interaction.options.getRole('role');
+        const reason = interaction.options.getString('reason') || '';
+
+        if (target.bot) {
+            return interaction.reply({
+                content: 'Botは参加許可投票の対象にできません。',
+                ephemeral: true
+            });
+        }
+
+        await interaction.guild.members.fetch();
+
+        const targetMember =
+            await interaction.guild.members.fetch(target.id);
+
+        if (targetMember.roles.cache.has(role.id)) {
+            return interaction.reply({
+                content: `<@${target.id}> はすでに <@&${role.id}> を持っています。`,
+                ephemeral: true
+            });
+        }
+
+        const voters = interaction.guild.members.cache.filter(member =>
+            !member.user.bot &&
+            member.roles.cache.has(role.id) &&
+            member.id !== target.id
+        );
+
+        const totalVoters = voters.size;
+
+        if (totalVoters <= 0) {
+            return interaction.reply({
+                content: '投票対象ロールを持つメンバーがいません。',
+                ephemeral: true
+            });
+        }
+
+        if (!data.joinVotes) data.joinVotes = {};
+
+        const voteId = createShortId('jv');
+
+        data.joinVotes[voteId] = {
+            id: voteId,
+            guildId: interaction.guild.id,
+            channelId: interaction.channel.id,
+            messageId: null,
+            creatorId: userId,
+            targetUserId: target.id,
+            roleId: role.id,
+            reason,
+            totalVoters,
+            approveThreshold: Math.ceil(totalVoters * 2 / 3),
+            denyThreshold: Math.ceil(totalVoters / 3),
+            approveCount: 0,
+            denyCount: 0,
+            voters: {},
+            closed: false,
+            result: null,
+            createdAt: new Date().toISOString()
+        };
+
+        const message = await interaction.reply({
+            embeds: [buildJoinVoteEmbed(data.joinVotes[voteId])],
+            components: [buildJoinVoteRow(voteId)],
+            fetchReply: true
+        });
+
+        data.joinVotes[voteId].messageId = message.id;
+
+        saveData(data);
+
+        return;
+    }
+
+    if (interaction.commandName === 'anonpoll') {
+        const title = interaction.options.getString('title');
+        const endInput = interaction.options.getString('end');
+        const parsedEnd = parseAnonPollEndTime(endInput);
+
+        if (!parsedEnd.ok) {
+            return interaction.reply({
+                content: parsedEnd.error,
+                ephemeral: true
+            });
+        }
+
+        if (parsedEnd.endAt && new Date(parsedEnd.endAt).getTime() <= Date.now()) {
+            return interaction.reply({
+                content: '終了時間は現在より後の時刻を指定してください。',
+                ephemeral: true
+            });
+        }
+
+        const choices = [];
+
+        for (let i = 1; i <= 10; i++) {
+            const choice = interaction.options.getString(`choice${i}`);
+
+            if (choice && choice.trim()) {
+                choices.push(choice.trim());
+            }
+        }
+
+        const uniqueChoices =
+            choices.filter((choice, index) => choices.indexOf(choice) === index);
+
+        if (uniqueChoices.length < 2) {
+            return interaction.reply({
+                content: '選択肢は2つ以上必要です。',
+                ephemeral: true
+            });
+        }
+
+        if (!data.anonPolls) data.anonPolls = {};
+
+        const pollId = createShortId('ap');
+
+        data.anonPolls[pollId] = {
+            id: pollId,
+            title: title.slice(0, 256),
+            choices: uniqueChoices,
+            counts: uniqueChoices.map(() => 0),
+            voters: {},
+            creatorId: userId,
+            guildId: interaction.guild.id,
+            channelId: interaction.channel.id,
+            messageId: null,
+            endAt: parsedEnd.endAt,
+            closed: false,
+            closeReason: null,
+            closedAt: null,
+            createdAt: new Date().toISOString()
+        };
+
+        const message = await interaction.reply({
+            embeds: [buildAnonPollEmbed(data.anonPolls[pollId])],
+            components: buildAnonPollRows(pollId, data.anonPolls[pollId]),
+            fetchReply: true
+        });
+
+        data.anonPolls[pollId].messageId = message.id;
+
+        saveData(data);
+
+        return;
+    }
+
+    if (interaction.commandName === 'g-half') {
+        if (!data.halfGames) data.halfGames = {};
+
+        if (data.halfGames[userId]?.active) {
+            return interaction.reply({
+                content: 'すでに進行中の1/2^nゲームがあります。',
+                ephemeral: true
+            });
+        }
+
+        data.halfGames[userId] = {
+            active: true,
+            current: 0,
+            startedAt: new Date().toISOString()
+        };
+
+        saveData(data);
+
+        return interaction.reply({
+            content:
+                `🎲 1/2^nゲーム開始！\n` +
+                `AかBを選んでください。\n` +
+                `外すまで連続成功数を伸ばせます。`,
+            components: [buildHalfGameRow(userId)]
         });
     }
 

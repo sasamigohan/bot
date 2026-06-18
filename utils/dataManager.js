@@ -24,6 +24,9 @@ let cache = {
     hourlyLogs: {},
     doubleUps: {},
     derbies: {},
+    joinVotes: {},
+    anonPolls: {},
+    halfGames: {},
     colorRoleMap: {},
     detachedColorRoles: {}
 };
@@ -38,6 +41,9 @@ function createDefaultData() {
         hourlyLogs: {},
         doubleUps: {},
         derbies: {},
+        joinVotes: {},
+        anonPolls: {},
+        halfGames: {},
         colorRoleMap: {},
         detachedColorRoles: {}
     };
@@ -66,6 +72,7 @@ function ensureUser(data, userId) {
 
     if (user.messageCount === undefined) user.messageCount = 0;
     if (user.explosionCount === undefined) user.explosionCount = 0;
+    if (user.halfBest === undefined) user.halfBest = 0;
     if (user.reactionCount === undefined) user.reactionCount = 0;
     if (user.voiceMinutesTotal === undefined) user.voiceMinutesTotal = 0;
     if (user.voicePointMinutes === undefined) user.voicePointMinutes = 0;
@@ -82,6 +89,9 @@ function normalizeData(data) {
     if (!data.hourlyLogs) data.hourlyLogs = {};
     if (!data.doubleUps) data.doubleUps = {};
     if (!data.derbies) data.derbies = {};
+    if (!data.joinVotes) data.joinVotes = {};
+    if (!data.anonPolls) data.anonPolls = {};
+    if (!data.halfGames) data.halfGames = {};
     if (!data.colorRoleMap)
         data.colorRoleMap = {};
     if (!data.colorRoleMap) data.colorRoleMap = {};
