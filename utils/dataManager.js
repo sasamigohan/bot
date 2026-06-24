@@ -28,7 +28,16 @@ let cache = {
     anonPolls: {},
     halfGames: {},
     colorRoleMap: {},
-    detachedColorRoles: {}
+    detachedColorRoles: {},
+    bombMode: {
+        active: false,
+        type: null,
+        remainingMessages: 0,
+        currentRate: 0,
+        startedAt: null,
+        nextRateChangeAt: null,
+        announceChannelId: null
+    }
 };
 
 function createDefaultData() {
@@ -45,7 +54,16 @@ function createDefaultData() {
         anonPolls: {},
         halfGames: {},
         colorRoleMap: {},
-        detachedColorRoles: {}
+        detachedColorRoles: {},
+        bombMode: {
+            active: false,
+            type: null,
+            remainingMessages: 0,
+            currentRate: 0,
+            startedAt: null,
+            nextRateChangeAt: null,
+            announceChannelId: null
+        }
     };
 }
 
@@ -96,6 +114,25 @@ function normalizeData(data) {
         data.colorRoleMap = {};
     if (!data.colorRoleMap) data.colorRoleMap = {};
     if (!data.detachedColorRoles) data.detachedColorRoles = {};
+    if (!data.bombMode) {
+        data.bombMode = {
+            active: false,
+            type: null,
+            remainingMessages: 0,
+            currentRate: 0,
+            startedAt: null,
+            nextRateChangeAt: null,
+            announceChannelId: null
+        };
+    } else {
+        data.bombMode.active = Boolean(data.bombMode.active);
+        data.bombMode.type = data.bombMode.type || null;
+        data.bombMode.remainingMessages = Number(data.bombMode.remainingMessages || 0);
+        data.bombMode.currentRate = Number(data.bombMode.currentRate || 0);
+        data.bombMode.startedAt = data.bombMode.startedAt || null;
+        data.bombMode.nextRateChangeAt = data.bombMode.nextRateChangeAt || null;
+        data.bombMode.announceChannelId = data.bombMode.announceChannelId || null;
+    }
 
     if (!data.detachedColorRoles)
         data.detachedColorRoles = {};

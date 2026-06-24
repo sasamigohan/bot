@@ -87,14 +87,6 @@ function createEmbed(title, description, options = {}) {
         embed.setFooter({ text: options.footer });
     }
 
-    if (options.image) {
-        embed.setImage(options.image);
-    }
-
-    if (options.thumbnail) {
-        embed.setThumbnail(options.thumbnail);
-    }
-
     return embed;
 }
 
@@ -208,18 +200,6 @@ const explosionGif =
     "https://tenor.com/view/jpexplosion-gif-5562858";
 
 const timeoutList = [5, 10, 15, 30, 60];
-
-const SPECIAL_BOMB_MODE_CHANNEL_ID = '1453193177581486100';
-const SPECIAL_BOMB_RED_GIF = 'https://cdn.discordapp.com/attachments/1453193296011726868/1519289095501643907/4d6c59380065a2fb.gif?ex=6a3d03bb&is=6a3bb23b&hm=9730c6037f153f1127060873b19dfb1d2c88614f5abb3071c63de8ef8f38b44d&';
-const SPECIAL_BOMB_MICHAEL_GIF = 'https://media.tenor.com/x8v1oNUOmg4AAAAd/explosion-anime.gif';
-const SPECIAL_BOMB_START_RATE_MIN = 0.05;
-const SPECIAL_BOMB_START_RATE_MAX = 0.10;
-const SPECIAL_BOMB_MICHAEL_RATE_MIN = 0.01;
-const SPECIAL_BOMB_MICHAEL_RATE_MAX = 0.20;
-const SPECIAL_BOMB_ROLL_INTERVAL_MS = 30 * 60 * 1000;
-const SPECIAL_BOMB_RATE_INTERVAL_MS = 10 * 60 * 1000;
-const SPECIAL_BOMB_MESSAGE_LIMIT = 200;
-const SPECIAL_BOMB_ROLL_CHANCE = 0.02;
 
 const recentLevelNotices = new Map();
 
@@ -672,280 +652,6 @@ async function addEarnedPointsAndCheckLevel({
     await announceLevelUp(guild, member, result, fallbackChannel);
 }
 
-
-function ensureBombModeState(data) {
-    if (!data.bombMode) {
-        data.bombMode = {
-            active: false,
-            type: null,
-            remainingMessages: 0,
-            currentRate: 0,
-            startedAt: null,
-            nextRateChangeAt: null,
-            announceChannelId: null
-        };
-    }
-
-    data.bombMode.active = Boolean(data.bombMode.active);
-    data.bombMode.type = data.bombMode.type || null;
-    data.bombMode.remainingMessages = Number(data.bombMode.remainingMessages || 0);
-    data.bombMode.currentRate = Number(data.bombMode.currentRate || 0);
-    data.bombMode.startedAt = data.bombMode.startedAt || null;
-    data.bombMode.nextRateChangeAt = data.bombMode.nextRateChangeAt || null;
-    data.bombMode.announceChannelId = data.bombMode.announceChannelId || null;
-    return data.bombMode;
-}
-
-function randomRate(min, max) {
-    return Number((Math.random() * (max - min) + min).toFixed(4));
-}
-
-function getBombChance(data) {
-    const mode = data?.bombMode;
-    if (mode?.active && Number(mode.currentRate) > 0) {
-        return Number(mode.currentRate);
-    }
-    return Number(settings.BOMB_CHANCE || 0.05);
-}
-
-function formatBombRate(rate) {
-    return `${(Number(rate || 0) * 100).toFixed(2)}%`;
-}
-
-function pickSpecialBombMode() {
-    return Math.random() < 0.5 ? 'redshard' : 'michael';
-}
-
-function buildSpecialBombEmbed(type, stage, bombMode) {
-    const remaining = Number(bombMode?.remainingMessages || 0);
-    const rateText = formatBombRate(bombMode?.currentRate || 0);
-
-    if (type === 'redshard') {
-        if (stage === 'end') {
-            return createEmbed(
-                '🟥 赤シャード終了',
-                '*原罪よりこの地方に来た闇は浄化されたようです*',
-                {
-                    color: 0x8B0000,
-                    image: SPECIAL_BOMB_RED_GIF
-                }
-            );
-        }
-
-        return createEmbed(
-            '🟥 赤シャード発生',
-            `*闇はCaffe Latteに墜ちたようです*\n\n` +
-            `爆発率: ${rateText}\n` +
-            `残りメッセージ数: ${remaining}`,
-            {
-                color: 0xCC0000,
-                image: SPECIAL_BOMB_RED_GIF
-            }
-        );
-    }
-
-    if (type === 'michael') {
-        if (stage === 'end') {
-            return createEmbed(
-                '👋 マイケルモード終了',
-                'じゃ、またな！',
-                {
-                    color: 0x5865F2,
-                    image: SPECIAL_BOMB_MICHAEL_GIF
-                }
-            );
-        }
-
-        if (stage === 'rate') {
-            return createEmbed(
-                '💥 マイケル通信',
-                `現在の爆発率：${rateText}\n` +
-                `残りメッセージ数：${remaining}`,
-                {
-                    color: 0xF1C40F,
-                    image: SPECIAL_BOMB_MICHAEL_GIF
-                }
-            );
-        }
-
-        return createEmbed(
-            '💥 マイケルモード発動',
-            `やぁ！俺だ！\n\n` +
-            `爆発率が10分ごとに変動します。\n` +
-            `現在の爆発率：${rateText}\n` +
-            `残りメッセージ数：${remaining}`,
-            {
-                color: 0xF1C40F,
-                image: SPECIAL_BOMB_MICHAEL_GIF
-            }
-        );
-    }
-
-    return createEmbed(
-        '特殊モード',
-        '不明なモードです。',
-        { color: 0x5865F2 }
-    );
-}
-
-async function sendSpecialBombEmbed(type, stage, bombMode) {
-    try {
-        const channel = await client.channels.fetch(SPECIAL_BOMB_MODE_CHANNEL_ID);
-        if (!channel || !channel.send) return false;
-        await channel.send({
-            embeds: [buildSpecialBombEmbed(type, stage, bombMode)]
-        });
-        return true;
-    } catch (err) {
-        console.error(err);
-        return false;
-    }
-}
-
-async function stopSpecialBombMode(data, { reason = 'manual' } = {}) {
-    const bombMode = ensureBombModeState(data);
-
-    if (!bombMode.active) {
-        return false;
-    }
-
-    const previous = { ...bombMode };
-    bombMode.active = false;
-    bombMode.type = null;
-    bombMode.remainingMessages = 0;
-    bombMode.currentRate = 0;
-    bombMode.startedAt = null;
-    bombMode.nextRateChangeAt = null;
-
-    const announced = await sendSpecialBombEmbed(previous.type, 'end', previous);
-
-    if (!announced && reason !== 'manual') {
-        // 何もしない
-    }
-
-    return true;
-}
-
-async function startSpecialBombMode(data, type, { force = false } = {}) {
-    const bombMode = ensureBombModeState(data);
-
-    if (bombMode.active && !force) {
-        return false;
-    }
-
-    if (bombMode.active && force) {
-        await stopSpecialBombMode(data, { reason: 'force' });
-    }
-
-    const now = new Date();
-
-    bombMode.active = true;
-    bombMode.type = type;
-    bombMode.remainingMessages = SPECIAL_BOMB_MESSAGE_LIMIT;
-    bombMode.startedAt = now.toISOString();
-    bombMode.announceChannelId = SPECIAL_BOMB_MODE_CHANNEL_ID;
-
-    if (type === 'redshard') {
-        bombMode.currentRate = randomRate(SPECIAL_BOMB_START_RATE_MIN, SPECIAL_BOMB_START_RATE_MAX);
-        bombMode.nextRateChangeAt = null;
-    } else if (type === 'michael') {
-        bombMode.currentRate = randomRate(SPECIAL_BOMB_MICHAEL_RATE_MIN, SPECIAL_BOMB_MICHAEL_RATE_MAX);
-        bombMode.nextRateChangeAt = new Date(now.getTime() + SPECIAL_BOMB_RATE_INTERVAL_MS).toISOString();
-    } else {
-        bombMode.currentRate = Number(settings.BOMB_CHANCE || 0.05);
-        bombMode.nextRateChangeAt = null;
-    }
-
-    await sendSpecialBombEmbed(type, 'start', bombMode);
-
-    return true;
-}
-
-async function refreshSpecialBombRate(data) {
-    const bombMode = ensureBombModeState(data);
-
-    if (!bombMode.active || bombMode.type !== 'michael') {
-        return false;
-    }
-
-    const now = Date.now();
-    let nextAt = bombMode.nextRateChangeAt
-        ? new Date(bombMode.nextRateChangeAt).getTime()
-        : 0;
-
-    if (!nextAt) {
-        bombMode.nextRateChangeAt = new Date(now + SPECIAL_BOMB_RATE_INTERVAL_MS).toISOString();
-        return false;
-    }
-
-    let changed = false;
-
-    while (nextAt && now >= nextAt && bombMode.active && bombMode.type === 'michael') {
-        bombMode.currentRate = randomRate(
-            SPECIAL_BOMB_MICHAEL_RATE_MIN,
-            SPECIAL_BOMB_MICHAEL_RATE_MAX
-        );
-        bombMode.nextRateChangeAt = new Date(nextAt + SPECIAL_BOMB_RATE_INTERVAL_MS).toISOString();
-        nextAt += SPECIAL_BOMB_RATE_INTERVAL_MS;
-        changed = true;
-    }
-
-    if (changed) {
-        await sendSpecialBombEmbed('michael', 'rate', bombMode);
-    }
-
-    return changed;
-}
-
-async function consumeSpecialBombMessage(data) {
-    const bombMode = ensureBombModeState(data);
-
-    if (!bombMode.active) {
-        return false;
-    }
-
-    bombMode.remainingMessages = Math.max(0, bombMode.remainingMessages - 1);
-
-    if (bombMode.remainingMessages <= 0) {
-        await stopSpecialBombMode(data, { reason: 'messages' });
-        return true;
-    }
-
-    return false;
-}
-
-async function handleSpecialBombRoll() {
-    const data = loadData();
-    const bombMode = ensureBombModeState(data);
-
-    if (bombMode.active) return;
-
-    if (Math.random() >= SPECIAL_BOMB_ROLL_CHANCE) return;
-
-    const type = pickSpecialBombMode();
-    const started = await startSpecialBombMode(data, type, { force: false });
-
-    if (started) {
-        saveData(data);
-    }
-}
-
-async function handleSpecialBombTick() {
-    const data = loadData();
-    const changed = await refreshSpecialBombRate(data);
-
-    if (changed) {
-        saveData(data);
-        return;
-    }
-
-    const bombMode = ensureBombModeState(data);
-    if (bombMode.active && bombMode.type === 'michael' && !bombMode.nextRateChangeAt) {
-        saveData(data);
-    }
-}
-
-
 const commands = [
     new SlashCommandBuilder()
         .setName('ping')
@@ -1163,21 +869,6 @@ const commands = [
         .setDescription('このチャンネルの爆弾ON/OFF'),
 
     new SlashCommandBuilder()
-        .setName('m-bmode')
-        .setDescription('管理者専用：爆発特殊モードのデバッグ制御')
-        .addStringOption(option =>
-            option
-                .setName('mode')
-                .setDescription('操作するモード')
-                .setRequired(true)
-                .addChoices(
-                    { name: '赤シャードを強制開始', value: 'redshard' },
-                    { name: 'マイケルを強制開始', value: 'michael' },
-                    { name: '停止', value: 'off' }
-                )
-        ),
-
-    new SlashCommandBuilder()
         .setName('cr-set')
         .setDescription('管理者：カラー設定ロールを登録')
         .addUserOption(option =>
@@ -1375,8 +1066,6 @@ client.once('clientReady', async () => {
     setInterval(handleVoicePoints, 60 * 1000);
     setInterval(handleDailyReminder, 60 * 1000);
     setInterval(handleAnonPollDeadlines, 60 * 1000);
-    setInterval(handleSpecialBombRoll, SPECIAL_BOMB_ROLL_INTERVAL_MS);
-    setInterval(handleSpecialBombTick, 60 * 1000);
 });
 
 async function handleVoicePoints() {
@@ -1567,12 +1256,8 @@ client.on('messageCreate', async message => {
         hourly: true
     });
 
-    await refreshSpecialBombRate(data);
-
     if (!isBombMutedChannel(data, message.channel)) {
-        const bombChance = getBombChance(data);
-
-        if (Math.random() <= bombChance) {
+        if (Math.random() <= settings.BOMB_CHANCE) {
             try {
                 const seconds =
                     timeoutList[Math.floor(Math.random() * timeoutList.length)];
@@ -1601,8 +1286,6 @@ client.on('messageCreate', async message => {
             }
         }
     }
-
-    await consumeSpecialBombMessage(data);
 
     saveData(data);
 });
@@ -2144,58 +1827,6 @@ client.on('interactionCreate', async interaction => {
         });
     }
 
-
-    if (interaction.commandName === 'm-bmode') {
-        if (
-            !interaction.member.permissions.has(
-                PermissionsBitField.Flags.Administrator
-            )
-        ) {
-            return interaction.reply({
-                content: '管理者専用です。',
-                ephemeral: true
-            });
-        }
-
-        const mode = interaction.options.getString('mode');
-
-        if (mode === 'off') {
-            const stopped = await stopSpecialBombMode(data, { reason: 'manual' });
-
-            if (stopped) {
-                saveData(data);
-
-                return interaction.reply({
-                    content: '特殊爆発モードを終了しました。',
-                    ephemeral: true
-                });
-            }
-
-            return interaction.reply({
-                content: '現在、特殊爆発モードは起動していません。',
-                ephemeral: true
-            });
-        }
-
-        const started = await startSpecialBombMode(data, mode, { force: true });
-
-        if (started) {
-            saveData(data);
-
-            return interaction.reply({
-                content:
-                    mode === 'redshard'
-                        ? '赤シャードモードを強制開始しました。'
-                        : 'マイケルモードを強制開始しました。',
-                ephemeral: true
-            });
-        }
-
-        return interaction.reply({
-            content: '特殊爆発モードの開始に失敗しました。',
-            ephemeral: true
-        });
-    }
 
     if (interaction.commandName === 'm-reset') {
         if (
