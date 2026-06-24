@@ -712,6 +712,15 @@ function formatBombRate(rate) {
     return `${(Number(rate || 0) * 100).toFixed(2)}%`;
 }
 
+function getExplosionGif(data) {
+    const mode = data?.bombMode;
+    if (mode?.active) {
+        if (mode.type === 'redshard') return SPECIAL_BOMB_RED_GIF;
+        if (mode.type === 'michael') return SPECIAL_BOMB_MICHAEL_GIF;
+    }
+    return explosionGif;
+}
+
 function pickSpecialBombMode() {
     return Math.random() < 0.5 ? 'redshard' : 'michael';
 }
@@ -1580,8 +1589,9 @@ client.on('messageCreate', async message => {
                 data.users[message.author.id].explosionCount =
                     (data.users[message.author.id].explosionCount || 0) + 1;
 
+                const currentGif = getExplosionGif(data);
                 await message.channel.send(
-                    `${explosionGif}\n` +
+                    `${currentGif}\n` +
                     `<@${message.author.id}>じゃ！ \n` +
                     `${seconds}.`
                 );
