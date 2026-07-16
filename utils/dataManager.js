@@ -62,7 +62,9 @@ function createDefaultData() {
             currentRate: 0,
             startedAt: null,
             nextRateChangeAt: null,
-            announceChannelId: null
+            announceChannelId: null,
+            expiresAt: null,
+            lastRateMessageId: null
         }
     };
 }
@@ -132,6 +134,8 @@ function normalizeData(data) {
         data.bombMode.startedAt = data.bombMode.startedAt || null;
         data.bombMode.nextRateChangeAt = data.bombMode.nextRateChangeAt || null;
         data.bombMode.announceChannelId = data.bombMode.announceChannelId || null;
+        if (data.bombMode.expiresAt === undefined) data.bombMode.expiresAt = null;
+        if (data.bombMode.lastRateMessageId === undefined) data.bombMode.lastRateMessageId = null;
     }
 
     if (!data.detachedColorRoles)

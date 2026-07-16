@@ -11,7 +11,8 @@ const {
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
-    EmbedBuilder
+    EmbedBuilder,
+    MessageFlags
 } = require('discord.js');
 
 const {
@@ -219,7 +220,8 @@ const SPECIAL_BOMB_MICHAEL_RATE_MAX = 0.20;
 const SPECIAL_BOMB_ROLL_INTERVAL_MS = 30 * 60 * 1000;
 const SPECIAL_BOMB_RATE_INTERVAL_MS = 10 * 60 * 1000;
 const SPECIAL_BOMB_MESSAGE_LIMIT = 200;
-const SPECIAL_BOMB_ROLL_CHANCE = 0.02;
+const SPECIAL_BOMB_ROLL_CHANCE = 0.004;
+const SPECIAL_BOMB_DURATION_MS = 3 * 60 * 60 * 1000;
 
 const recentLevelNotices = new Map();
 
@@ -682,7 +684,9 @@ function ensureBombModeState(data) {
             currentRate: 0,
             startedAt: null,
             nextRateChangeAt: null,
-            announceChannelId: null
+            announceChannelId: null,
+            expiresAt: null,
+            lastRateMessageId: null
         };
     }
 
@@ -693,6 +697,8 @@ function ensureBombModeState(data) {
     data.bombMode.startedAt = data.bombMode.startedAt || null;
     data.bombMode.nextRateChangeAt = data.bombMode.nextRateChangeAt || null;
     data.bombMode.announceChannelId = data.bombMode.announceChannelId || null;
+    if (data.bombMode.expiresAt === undefined) data.bombMode.expiresAt = null;
+    if (data.bombMode.lastRateMessageId === undefined) data.bombMode.lastRateMessageId = null;
     return data.bombMode;
 }
 
@@ -710,15 +716,6 @@ function getBombChance(data) {
 
 function formatBombRate(rate) {
     return `${(Number(rate || 0) * 100).toFixed(2)}%`;
-}
-
-function getExplosionGif(data) {
-    const mode = data?.bombMode;
-    if (mode?.active) {
-        if (mode.type === 'redshard') return SPECIAL_BOMB_RED_GIF;
-        if (mode.type === 'michael') return SPECIAL_BOMB_MICHAEL_GIF;
-    }
-    return explosionGif;
 }
 
 function pickSpecialBombMode() {
@@ -797,17 +794,24 @@ function buildSpecialBombEmbed(type, stage, bombMode) {
     );
 }
 
-async function sendSpecialBombEmbed(type, stage, bombMode) {
+async function sendSpecialBombEmbed(type, stage, bombMode, options = {}) {
     try {
         const channel = await client.channels.fetch(SPECIAL_BOMB_MODE_CHANNEL_ID);
-        if (!channel || !channel.send) return false;
-        await channel.send({
+        if (!channel || !channel.send) return null;
+
+        const payload = {
             embeds: [buildSpecialBombEmbed(type, stage, bombMode)]
-        });
-        return true;
+        };
+
+        if (options.silent) {
+            payload.flags = MessageFlags.SuppressNotifications;
+        }
+
+        const message = await channel.send(payload);
+        return message;
     } catch (err) {
         console.error(err);
-        return false;
+        return null;
     }
 }
 
@@ -819,12 +823,26 @@ async function stopSpecialBombMode(data, { reason = 'manual' } = {}) {
     }
 
     const previous = { ...bombMode };
+
+    // 最後の10分通知メッセージを削除
+    if (previous.lastRateMessageId) {
+        try {
+            const channel = await client.channels.fetch(SPECIAL_BOMB_MODE_CHANNEL_ID);
+            const oldMsg = await channel.messages.fetch(previous.lastRateMessageId);
+            await oldMsg.delete();
+        } catch {
+            // 削除失敗は無視
+        }
+    }
+
     bombMode.active = false;
     bombMode.type = null;
     bombMode.remainingMessages = 0;
     bombMode.currentRate = 0;
     bombMode.startedAt = null;
     bombMode.nextRateChangeAt = null;
+    bombMode.expiresAt = null;
+    bombMode.lastRateMessageId = null;
 
     const announced = await sendSpecialBombEmbed(previous.type, 'end', previous);
 
@@ -853,6 +871,8 @@ async function startSpecialBombMode(data, type, { force = false } = {}) {
     bombMode.remainingMessages = SPECIAL_BOMB_MESSAGE_LIMIT;
     bombMode.startedAt = now.toISOString();
     bombMode.announceChannelId = SPECIAL_BOMB_MODE_CHANNEL_ID;
+    bombMode.expiresAt = new Date(now.getTime() + SPECIAL_BOMB_DURATION_MS).toISOString();
+    bombMode.lastRateMessageId = null;
 
     if (type === 'redshard') {
         bombMode.currentRate = randomRate(SPECIAL_BOMB_START_RATE_MIN, SPECIAL_BOMB_START_RATE_MAX);
@@ -900,7 +920,23 @@ async function refreshSpecialBombRate(data) {
     }
 
     if (changed) {
-        await sendSpecialBombEmbed('michael', 'rate', bombMode);
+        // 前回の10分通知メッセージを削除
+        if (bombMode.lastRateMessageId) {
+            try {
+                const channel = await client.channels.fetch(SPECIAL_BOMB_MODE_CHANNEL_ID);
+                const oldMsg = await channel.messages.fetch(bombMode.lastRateMessageId);
+                await oldMsg.delete();
+            } catch {
+                // 削除失敗は無視
+            }
+            bombMode.lastRateMessageId = null;
+        }
+
+        // @silent で新しい通知を送信
+        const msg = await sendSpecialBombEmbed('michael', 'rate', bombMode, { silent: true });
+        if (msg) {
+            bombMode.lastRateMessageId = msg.id;
+        }
     }
 
     return changed;
@@ -941,6 +977,17 @@ async function handleSpecialBombRoll() {
 
 async function handleSpecialBombTick() {
     const data = loadData();
+    const bombMode = ensureBombModeState(data);
+
+    // 3時間タイムアウトチェック
+    if (bombMode.active && bombMode.expiresAt) {
+        if (Date.now() >= new Date(bombMode.expiresAt).getTime()) {
+            await stopSpecialBombMode(data, { reason: 'timeout' });
+            saveData(data);
+            return;
+        }
+    }
+
     const changed = await refreshSpecialBombRate(data);
 
     if (changed) {
@@ -948,7 +995,6 @@ async function handleSpecialBombTick() {
         return;
     }
 
-    const bombMode = ensureBombModeState(data);
     if (bombMode.active && bombMode.type === 'michael' && !bombMode.nextRateChangeAt) {
         saveData(data);
     }
@@ -1589,9 +1635,8 @@ client.on('messageCreate', async message => {
                 data.users[message.author.id].explosionCount =
                     (data.users[message.author.id].explosionCount || 0) + 1;
 
-                const currentGif = getExplosionGif(data);
                 await message.channel.send(
-                    `${currentGif}\n` +
+                    `${explosionGif}\n` +
                     `<@${message.author.id}>じゃ！ \n` +
                     `${seconds}.`
                 );
