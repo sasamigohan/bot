@@ -1003,6 +1003,26 @@ async function handleSpecialBombTick() {
 
 const commands = [
     new SlashCommandBuilder()
+        .setName('help')
+        .setDescription('コマンド一覧と説明を表示')
+        .addStringOption(option =>
+            option
+                .setName('category')
+                .setDescription('見たいカテゴリ（未指定なら全体概要）')
+                .setRequired(false)
+                .addChoices(
+                    { name: '基本・統計', value: 'basic' },
+                    { name: 'ショップ・ガチャ', value: 'shop' },
+                    { name: 'ポイント・ゲーム', value: 'game' },
+                    { name: 'ダービー', value: 'derby' },
+                    { name: 'カラー・表示ロール', value: 'color' },
+                    { name: 'おみくじ・通知', value: 'omikuji' },
+                    { name: '投票・アンケート', value: 'poll' },
+                    { name: '管理者専用', value: 'admin' }
+                )
+        ),
+
+    new SlashCommandBuilder()
         .setName('ping')
         .setDescription('Botの応答確認'),
 
@@ -2177,6 +2197,142 @@ client.on('interactionCreate', async interaction => {
     const userId = interaction.user.id;
 
     ensureUser(data, userId);
+
+    if (interaction.commandName === 'help') {
+        const category = interaction.options.getString('category');
+
+        const helpSections = {
+            basic: {
+                label: '📊 基本・統計',
+                lines: [
+                    '`/ping` — Botが正常に応答するか確認します。',
+                    '`/stats` — 自分の所持pt、ガチャチケット枚数、Lv、Lv用累計pt、' +
+                        '作業時間、リアクション数、メッセージ数、爆破された回数、' +
+                        '1/2^nゲームの自己ベストをまとめて表示します。',
+                    '`/rank [type]` — 各種ランキング（上位10人）を表示します。' +
+                        'typeで「所持ポイント／レベル／作業時間／リアクション数／' +
+                        'メッセージ数／爆発回数／1/2^n連続成功数」を選べます（省略時は所持ポイント）。',
+                    '`/log` — 直近20件のポイント増減ログを表示します（自分だけに見えます）。'
+                ]
+            },
+            shop: {
+                label: '🛒 ショップ・ガチャ',
+                lines: [
+                    '`/i-shop` — ショップの商品一覧と価格を表示します。',
+                    '`/i-buy item:<商品名>` — 指定した商品を購入します。' +
+                        'ガチャチケットや、色々な特典ロールが購入できます。',
+                    '`/g-gacha` — 所持しているガチャチケットを1枚消費してガチャを引きます。' +
+                        '低確率でGOLDENロール、一定確率で通常ロールが当たります。'
+                ]
+            },
+            game: {
+                label: '🎲 ポイント・ゲーム',
+                lines: [
+                    '`/p-give user:<相手> amount:<pt>` — 自分のポイントを他の人に譲渡します。' +
+                        '譲渡額の一部（5%）は手数料として運営に入り、残りが相手に届きます。',
+                    '`/g-double amount:<pt>` — 指定ポイントを賭けてダブルアップに挑戦します。' +
+                        'ボタンでA/Bを選び続け、外すまで倍々を狙えます（「終了して受け取る」でいつでも確定可）。',
+                    '`/g-half` — 1/2^nゲームを開始します。A/Bを選び続け、当たるたびに連続成功数が伸びます。' +
+                        '外すとゲーム終了です。',
+                    '`/workcheck` — 作業確認を行い、VC（通話）のポイント減衰タイマーをリセットします。'
+                ]
+            },
+            derby: {
+                label: '🏇 ダービー（賭けイベント）',
+                lines: [
+                    '`/db-start title:<名前>` — 500ptを使って新しいダービーを開始します（主催者になります）。',
+                    '`/db-list` — 現在開催中（参加受付中）のダービー一覧を表示します。',
+                    '`/db-join id:<ダービーID> amount:<pt>` — 指定したダービーに参加ポイントを賭けます。',
+                    '`/db-result id:<ダービーID> winners:<勝者メンション or none>` — ' +
+                        'ダービーの結果を確定します（主催者または管理者のみ）。' +
+                        'バンクから5%が主催者に手数料として渡り、残りが勝者で山分けされます。' +
+                        '勝者なしの場合は none と指定するとバンク全額が主催者に戻ります。'
+                ]
+            },
+            color: {
+                label: '🎨 カラー・表示ロール',
+                lines: [
+                    '`/r-disp role:<選択>` — ショップで購入済みの表示用ロール（称号のようなもの）を付け替えます。' +
+                        '「なし」で全解除、「購入済みすべて」で持っているものを全部付けられます。',
+                    '`/favlist` — 保存しているお気に入りカラー（ロールの色）一覧を表示します。',
+                    '`/favset number:<1か2>` — 保存済みのお気に入りカラーに変更します（変更は24時間に1回まで）。',
+                    '`/favrem number:<1か2>` — 保存済みのお気に入りカラーを削除します。',
+                    '`/cr-rem` — 自分のカラー設定用ロールを一時的に外します（次回 /omikuji で自動的に戻ります）。'
+                ]
+            },
+            omikuji: {
+                label: '🔮 おみくじ・通知',
+                lines: [
+                    '`/omikuji mode:<通常カラー/グラデーション>` — 1日1回おみくじを引きます。' +
+                        '結果に応じてラッキーカラーのロールカラーが変わることがあります。',
+                    '`/d-notify mode:<on/off>` — デイリーおみくじをまだ引いていない時のリマインド通知を' +
+                        '受け取るかどうかを設定します。'
+                ]
+            },
+            poll: {
+                label: '🗳️ 投票・アンケート',
+                lines: [
+                    '`/anonpoll title:<タイトル> choice1:<選択肢1> choice2:<選択肢2> ...` — ' +
+                        '匿名の投票アンケートを作成します（選択肢は最大10個、2個以上必須）。' +
+                        '`end`で終了時刻を指定できます（例: 23:00 / 2026-06-18 23:00 / 30m / 2h / 1d）。'
+                ]
+            },
+            admin: {
+                label: '🛠️ 管理者専用コマンド',
+                lines: [
+                    '`/m-addt user:<相手> amount:<枚数>` — 指定ユーザーにガチャチケットを追加します。',
+                    '`/m-addp user:<相手> amount:<pt>` — 指定ユーザーにポイントを追加します（Lv用には加算されません）。',
+                    '`/m-roleap role:<ロール> amount:<pt> level:<true/false>` — ' +
+                        '指定ロールを持つ全メンバーにまとめてポイントを付与します。levelをtrueにするとLv用ポイントにも加算され、レベルアップ判定も行われます。',
+                    '`/m-reset user:<対象>` — 対象ユーザーの「1日1回」系の制限（おみくじ等）をリセットします。',
+                    '`/m-bmode mode:<赤シャード/マイケル/停止>` — 爆発の特殊モードを手動で開始・終了します（デバッグ用）。',
+                    '`/m-joinvote user:<対象> role:<ロール> [reason]` — ' +
+                        '対象ユーザーへのロール付与（サーバー参加許可など）についてメンバー投票を作成します。',
+                    '`/cr-set user:<対象> role:<ロール>` — 対象ユーザーのカラー設定用ロールを登録します。',
+                    '`/db-result` は主催者に加えて管理者も結果確定が可能です。',
+                    '`/mutebomb` は管理者、または特定のロールを持つ人が実行できます（下記参照）。'
+                ]
+            }
+        };
+
+        if (category && helpSections[category]) {
+            const section = helpSections[category];
+
+            return interaction.reply({
+                content:
+                    `**${section.label}**\n\n` +
+                    section.lines.map(line => `• ${line}`).join('\n\n'),
+                ephemeral: true
+            });
+        }
+
+        const overviewText =
+            '📖 **コマンド一覧（概要）**\n' +
+            '詳しい説明は `/help category:<カテゴリ>` で見られます。\n\n' +
+            '📊 **基本・統計**\n' +
+            '`/ping` `/stats` `/rank` `/log`\n\n' +
+            '🛒 **ショップ・ガチャ**\n' +
+            '`/i-shop` `/i-buy` `/g-gacha`\n\n' +
+            '🎲 **ポイント・ゲーム**\n' +
+            '`/p-give` `/g-double` `/g-half` `/workcheck`\n\n' +
+            '🏇 **ダービー**\n' +
+            '`/db-start` `/db-list` `/db-join` `/db-result`\n\n' +
+            '🎨 **カラー・表示ロール**\n' +
+            '`/r-disp` `/favlist` `/favset` `/favrem` `/cr-rem`\n\n' +
+            '🔮 **おみくじ・通知**\n' +
+            '`/omikuji` `/d-notify`\n\n' +
+            '🗳️ **投票・アンケート**\n' +
+            '`/anonpoll`\n\n' +
+            '🛠️ **管理者専用**\n' +
+            '`/m-addt` `/m-addp` `/m-roleap` `/m-reset` `/m-bmode` ' +
+            '`/m-joinvote` `/cr-set` `/mutebomb`';
+
+        return interaction.reply({
+            content: overviewText,
+            ephemeral: true
+        });
+    }
+
     if (interaction.commandName === 'ping') {
         return interaction.reply({
             content: `🏓 Pong! ${client.ws.ping}ms`
