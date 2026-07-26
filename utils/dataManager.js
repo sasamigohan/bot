@@ -29,6 +29,13 @@ let cache = {
     halfGames: {},
     colorRoleMap: {},
     detachedColorRoles: {},
+    dailyEvents: {},
+    dailyEventAnnounceSentDate: null,
+    shardData: {
+        isSummerTime: true,
+        lastDailySentDate: null,
+        sentSessionKeys: []
+    },
     bombMode: {
         active: false,
         type: null,
@@ -55,6 +62,13 @@ function createDefaultData() {
         halfGames: {},
         colorRoleMap: {},
         detachedColorRoles: {},
+        dailyEvents: {},
+        dailyEventAnnounceSentDate: null,
+        shardData: {
+            isSummerTime: true,
+            lastDailySentDate: null,
+            sentSessionKeys: []
+        },
         bombMode: {
             active: false,
             type: null,
@@ -116,6 +130,19 @@ function normalizeData(data) {
         data.colorRoleMap = {};
     if (!data.colorRoleMap) data.colorRoleMap = {};
     if (!data.detachedColorRoles) data.detachedColorRoles = {};
+    if (!data.dailyEvents) data.dailyEvents = {};
+    if (!('dailyEventAnnounceSentDate' in data)) data.dailyEventAnnounceSentDate = null;
+    if (!data.shardData) {
+        data.shardData = {
+            isSummerTime: true,
+            lastDailySentDate: null,
+            sentSessionKeys: []
+        };
+    } else {
+        if (data.shardData.isSummerTime === undefined) data.shardData.isSummerTime = true;
+        if (data.shardData.lastDailySentDate === undefined) data.shardData.lastDailySentDate = null;
+        if (!Array.isArray(data.shardData.sentSessionKeys)) data.shardData.sentSessionKeys = [];
+    }
     if (!data.bombMode) {
         data.bombMode = {
             active: false,

@@ -28,6 +28,8 @@ const checkLevelUp = require('./utils/levelManager');
 const shop = require('./config/shop');
 const gacha = require('./config/gacha');
 const settings = require('./config/settings');
+const { handleShardSchedule } = require('./shard/shardScheduler');
+const { handleShardNowCommand, handleShardTimeCommand } = require('./shard/shardCommands');
 
 const ADMIN_USER_ID = "961521384264175626";
 
@@ -222,6 +224,15 @@ const SPECIAL_BOMB_RATE_INTERVAL_MS = 10 * 60 * 1000;
 const SPECIAL_BOMB_MESSAGE_LIMIT = 200;
 const SPECIAL_BOMB_ROLL_CHANCE = 0.004;
 const SPECIAL_BOMB_DURATION_MS = 3 * 60 * 60 * 1000;
+
+const DAILY_EVENT_ANNOUNCE_CHANNEL_ID = '1530865975455649902';
+
+const DAILY_EVENT_TYPE_LABELS = {
+    season: '季節',
+    event: 'イベント',
+    spirit: '再訪する精霊',
+    other: 'その他'
+};
 
 const recentLevelNotices = new Map();
 
@@ -469,6 +480,150 @@ function parseAnonPollEndTime(rawInput) {
         ok: false,
         error: '終了時間は `23:00`、`2026-06-18 23:00`、`30m`、`2h`、`1d` の形式で指定してください。'
     };
+}
+
+function parseEventDateTime(rawInput) {
+    const input = String(rawInput || '').trim();
+
+    if (!input) {
+        return { ok: true, value: null };
+    }
+
+    const match = input.match(
+        /^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})(?:[ T](\d{1,2}):(\d{2}))?$/
+    );
+
+    if (!match) {
+        return {
+            ok: false,
+            error: '日時は `2026-10-02` または `2026-10-02 16:00` の形式で指定してください。'
+        };
+    }
+
+    const [, y, mo, d, h, mi] = match;
+    const year = Number(y);
+    const month = Number(mo);
+    const day = Number(d);
+    const hour = h !== undefined ? Number(h) : 0;
+    const minute = mi !== undefined ? Number(mi) : 0;
+
+    if (
+        month < 1 || month > 12 ||
+        day < 1 || day > 31 ||
+        hour < 0 || hour > 23 ||
+        minute < 0 || minute > 59
+    ) {
+        return { ok: false, error: '日時の値が不正です。' };
+    }
+
+    const date = new Date(Date.UTC(year, month - 1, day, hour - 9, minute, 0));
+
+    if (Number.isNaN(date.getTime())) {
+        return { ok: false, error: '日時を読み取れませんでした。' };
+    }
+
+    return { ok: true, value: date.toISOString() };
+}
+
+function formatJapaneseDate(value) {
+    if (!value) return '未定';
+
+    const p = getJstParts(new Date(value));
+    return `${p.year}年${p.month}月${p.day}日`;
+}
+
+function formatSlashDateTime(value) {
+    if (!value) return '未定';
+
+    const p = getJstParts(new Date(value));
+
+    return (
+        `${p.year}/${String(p.month).padStart(2, '0')}/${String(p.day).padStart(2, '0')} ` +
+        `${String(p.hour).padStart(2, '0')}:${String(p.minute).padStart(2, '0')}`
+    );
+}
+
+function getDaysUntil(targetIso, now = new Date()) {
+    const diffMs = new Date(targetIso).getTime() - now.getTime();
+    return Math.ceil(diffMs / (24 * 60 * 60 * 1000));
+}
+
+function isSameJstDate(isoA, isoB) {
+    const a = getJstParts(new Date(isoA));
+    const b = getJstParts(new Date(isoB));
+
+    return (
+        a.year === b.year &&
+        a.month === b.month &&
+        a.day === b.day
+    );
+}
+
+function buildDailyEventLine(eventData, now) {
+    const label =
+        DAILY_EVENT_TYPE_LABELS[eventData.type] ||
+        DAILY_EVENT_TYPE_LABELS.other;
+
+    const name = eventData.name;
+    const hasStart = Boolean(eventData.startAt);
+    const hasEnd = Boolean(eventData.endAt);
+    const isUpcoming =
+        hasStart && new Date(eventData.startAt).getTime() > now.getTime();
+
+    if (isUpcoming) {
+        const days = Math.max(getDaysUntil(eventData.startAt, now), 0);
+
+        if (eventData.type === 'spirit') {
+            return `再訪する精霊「${name}」は${days}日後に訪れます。`;
+        }
+
+        return `${label}：「${name}」は${days}日後に開始されます。`;
+    }
+
+    if (eventData.type === 'spirit') {
+        if (hasEnd) {
+            return `再訪する精霊「${name}」が${formatSlashDateTime(eventData.endAt)}まで訪れます。`;
+        }
+
+        return `再訪する精霊「${name}」が訪れています。`;
+    }
+
+    const startedToday =
+        hasStart && isSameJstDate(eventData.startAt, now.toISOString());
+
+    if (startedToday) {
+        let line = `${label}：「${name}」が始まりました。`;
+
+        if (hasEnd) {
+            if (eventData.type === 'season') {
+                line += `この季節は${formatJapaneseDate(eventData.endAt)}に終了します。`;
+            } else {
+                const days = getDaysUntil(eventData.endAt, now);
+                line +=
+                    days <= 0
+                        ? '本日終了予定です。'
+                        : `${days}日後に終了します。`;
+            }
+        }
+
+        return line;
+    }
+
+    if (hasEnd) {
+        const days = getDaysUntil(eventData.endAt, now);
+
+        if (days <= 0) {
+            return `${label}：「${name}」は本日終了します。`;
+        }
+
+        if (eventData.type === 'season') {
+            return `${label}：「${name}」は${formatJapaneseDate(eventData.endAt)}に終了します。（残り${days}日）`;
+        }
+
+        return `${label}：「${name}」は${days}日後に終了します。`;
+    }
+
+    return `${label}：「${name}」開催中です。`;
 }
 
 function isAnonPollExpired(poll) {
@@ -1431,6 +1586,72 @@ const commands = [
                 )
         ),
 
+    new SlashCommandBuilder()
+        .setName('shard-now')
+        .setDescription('今日の破片情報を今すぐ表示'),
+
+    new SlashCommandBuilder()
+        .setName('shard-time')
+        .setDescription('破片通知のサマータイム設定（管理者専用・省略時は現在の設定を表示）')
+        .addStringOption(option =>
+            option
+                .setName('mode')
+                .setDescription('サマータイム設定')
+                .setRequired(false)
+                .addChoices(
+                    { name: 'サマータイム中（16:00送信）', value: 'summer' },
+                    { name: 'サマータイム終了後（17:00送信）', value: 'winter' }
+                )
+        ),
+
+    new SlashCommandBuilder()
+        .setName('event-add')
+        .setDescription('管理者専用：デイリー通知用のイベントを登録')
+        .addStringOption(option =>
+            option
+                .setName('name')
+                .setDescription('イベント名（「」は付けずに入力）')
+                .setRequired(true)
+        )
+        .addStringOption(option =>
+            option
+                .setName('type')
+                .setDescription('種類')
+                .setRequired(true)
+                .addChoices(
+                    { name: '季節', value: 'season' },
+                    { name: 'イベント', value: 'event' },
+                    { name: '再訪する精霊', value: 'spirit' },
+                    { name: 'その他', value: 'other' }
+                )
+        )
+        .addStringOption(option =>
+            option
+                .setName('start')
+                .setDescription('開始日時。例: 2026-10-02 / 2026-10-02 16:00（省略時は開催中扱い）')
+                .setRequired(false)
+        )
+        .addStringOption(option =>
+            option
+                .setName('end')
+                .setDescription('終了日時。例: 2026-10-02 / 2026-10-02 16:00（省略時は無期限）')
+                .setRequired(false)
+        ),
+
+    new SlashCommandBuilder()
+        .setName('event-remove')
+        .setDescription('管理者専用：登録済みイベントを削除')
+        .addStringOption(option =>
+            option
+                .setName('id')
+                .setDescription('削除するイベントID（/event-list で確認）')
+                .setRequired(true)
+        ),
+
+    new SlashCommandBuilder()
+        .setName('event-list')
+        .setDescription('管理者専用：登録済みイベント一覧を表示'),
+
 ].map(c => c.toJSON());
 
 const rest =
@@ -1449,9 +1670,11 @@ client.once('clientReady', async () => {
 
     setInterval(handleVoicePoints, 60 * 1000);
     setInterval(handleDailyReminder, 60 * 1000);
+    setInterval(handleDailyEventAnnounce, 60 * 1000);
     setInterval(handleAnonPollDeadlines, 60 * 1000);
     setInterval(handleSpecialBombRoll, SPECIAL_BOMB_ROLL_INTERVAL_MS);
     setInterval(handleSpecialBombTick, 60 * 1000);
+    setInterval(() => handleShardSchedule(client, loadData, saveData), 60 * 1000);
 });
 
 async function handleVoicePoints() {
@@ -1611,6 +1834,59 @@ async function handleDailyReminder() {
     }
 
     data.dailyReminderSentDate = today;
+    saveData(data);
+}
+
+async function handleDailyEventAnnounce() {
+    const data = loadData();
+
+    if (!data.shardData) {
+        data.shardData = {
+            isSummerTime: true,
+            lastDailySentDate: null,
+            sentSessionKeys: []
+        };
+    }
+
+    const targetHour = data.shardData.isSummerTime ? 16 : 17;
+    const { hour, minute } = getJstHourMinute();
+
+    if (hour !== targetHour || minute !== 0) return;
+
+    const today = getJstDateString();
+
+    if (data.dailyEventAnnounceSentDate === today) return;
+
+    if (!data.dailyEvents) data.dailyEvents = {};
+
+    let channel;
+
+    try {
+        channel = await client.channels.fetch(DAILY_EVENT_ANNOUNCE_CHANNEL_ID);
+    } catch {
+        return;
+    }
+
+    const now = new Date();
+
+    for (const [id, eventData] of Object.entries(data.dailyEvents)) {
+        if (
+            eventData.endAt &&
+            new Date(eventData.endAt).getTime() <= now.getTime()
+        ) {
+            delete data.dailyEvents[id];
+        }
+    }
+
+    const lines = Object.values(data.dailyEvents)
+        .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+        .map(eventData => buildDailyEventLine(eventData, now));
+
+    const content = ['デイリーが更新されました。', ...lines].join('\n');
+
+    await channel.send({ content });
+
+    data.dailyEventAnnounceSentDate = today;
     saveData(data);
 }
 
@@ -2353,6 +2629,14 @@ client.on('interactionCreate', async interaction => {
                     : 'デイリーおみくじ未実行通知を受け取るようにしました。',
             ephemeral: true
         });
+    }
+
+    if (interaction.commandName === 'shard-now') {
+        return handleShardNowCommand(interaction);
+    }
+
+    if (interaction.commandName === 'shard-time') {
+        return handleShardTimeCommand(interaction, data, saveData);
     }
 
 
@@ -3963,6 +4247,157 @@ if (
 
         return interaction.reply({
             content: '爆弾を無効化しました。'
+        });
+    }
+
+    if (interaction.commandName === 'event-add') {
+        if (
+            !interaction.member.permissions.has(
+                PermissionsBitField.Flags.Administrator
+            )
+        ) {
+            return interaction.reply({
+                content: '管理者専用です。',
+                ephemeral: true
+            });
+        }
+
+        const name = interaction.options.getString('name').trim();
+        const type = interaction.options.getString('type');
+        const startInput = interaction.options.getString('start');
+        const endInput = interaction.options.getString('end');
+
+        if (!name) {
+            return interaction.reply({
+                content: 'イベント名を入力してください。',
+                ephemeral: true
+            });
+        }
+
+        const parsedStart = parseEventDateTime(startInput);
+
+        if (!parsedStart.ok) {
+            return interaction.reply({
+                content: parsedStart.error,
+                ephemeral: true
+            });
+        }
+
+        const parsedEnd = parseEventDateTime(endInput);
+
+        if (!parsedEnd.ok) {
+            return interaction.reply({
+                content: parsedEnd.error,
+                ephemeral: true
+            });
+        }
+
+        if (
+            parsedStart.value &&
+            parsedEnd.value &&
+            new Date(parsedEnd.value).getTime() <=
+                new Date(parsedStart.value).getTime()
+        ) {
+            return interaction.reply({
+                content: '終了日時は開始日時より後にしてください。',
+                ephemeral: true
+            });
+        }
+
+        if (!data.dailyEvents) data.dailyEvents = {};
+
+        const id = createShortId('ev');
+
+        data.dailyEvents[id] = {
+            id,
+            name: name.slice(0, 100),
+            type,
+            startAt: parsedStart.value,
+            endAt: parsedEnd.value,
+            createdBy: userId,
+            createdAt: new Date().toISOString()
+        };
+
+        saveData(data);
+
+        return interaction.reply({
+            content:
+                `イベントを登録しました。\n` +
+                `ID: \`${id}\`\n` +
+                `種類: ${DAILY_EVENT_TYPE_LABELS[type]}\n` +
+                `名前: 「${name}」\n` +
+                `開始: ${parsedStart.value ? formatJstDateTime(parsedStart.value) : '設定なし（開催中扱い）'}\n` +
+                `終了: ${parsedEnd.value ? formatJstDateTime(parsedEnd.value) : '設定なし（無期限）'}`,
+            ephemeral: true
+        });
+    }
+
+    if (interaction.commandName === 'event-remove') {
+        if (
+            !interaction.member.permissions.has(
+                PermissionsBitField.Flags.Administrator
+            )
+        ) {
+            return interaction.reply({
+                content: '管理者専用です。',
+                ephemeral: true
+            });
+        }
+
+        const id = interaction.options.getString('id').trim();
+
+        if (!data.dailyEvents || !data.dailyEvents[id]) {
+            return interaction.reply({
+                content: `ID \`${id}\` のイベントは見つかりませんでした。/event-list で確認してください。`,
+                ephemeral: true
+            });
+        }
+
+        const removed = data.dailyEvents[id];
+        delete data.dailyEvents[id];
+
+        saveData(data);
+
+        return interaction.reply({
+            content: `イベント「${removed.name}」（ID: \`${id}\`）を削除しました。`,
+            ephemeral: true
+        });
+    }
+
+    if (interaction.commandName === 'event-list') {
+        if (
+            !interaction.member.permissions.has(
+                PermissionsBitField.Flags.Administrator
+            )
+        ) {
+            return interaction.reply({
+                content: '管理者専用です。',
+                ephemeral: true
+            });
+        }
+
+        if (!data.dailyEvents) data.dailyEvents = {};
+
+        const events = Object.values(data.dailyEvents).sort(
+            (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
+        );
+
+        if (events.length === 0) {
+            return interaction.reply({
+                content: '登録済みのイベントはありません。',
+                ephemeral: true
+            });
+        }
+
+        const lines = events.map(ev =>
+            `ID: \`${ev.id}\` | ${DAILY_EVENT_TYPE_LABELS[ev.type] || ev.type} | 「${ev.name}」 | ` +
+            `開始: ${ev.startAt ? formatJstDateTime(ev.startAt) : '未設定'} | ` +
+            `終了: ${ev.endAt ? formatJstDateTime(ev.endAt) : '無期限'}`
+        );
+
+        return interaction.reply({
+            content: lines.join('\n').slice(0, 1900),
+            ephemeral: true
         });
     }
 });
