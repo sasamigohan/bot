@@ -30,6 +30,12 @@ const gacha = require('./config/gacha');
 const settings = require('./config/settings');
 const { handleShardSchedule } = require('./shard/shardScheduler');
 const { handleShardNowCommand, handleShardTimeCommand } = require('./shard/shardCommands');
+const {
+    handleRadioTaisoSchedule,
+    handleRadioVoiceStateUpdate,
+    startRadioEvent,
+    endRadioEvent
+} = require('./radio/radioTaiso');
 
 const ADMIN_USER_ID = "961521384264175626";
 
@@ -1652,6 +1658,14 @@ const commands = [
         .setName('event-list')
         .setDescription('管理者専用：登録済みイベント一覧を表示'),
 
+    new SlashCommandBuilder()
+        .setName('radio-start')
+        .setDescription('管理者専用：ラジオ体操イベントを開始（毎朝8:50から自動実行）'),
+
+    new SlashCommandBuilder()
+        .setName('radio-end')
+        .setDescription('管理者専用：ラジオ体操イベントを終了し、参加日数ランキングを発表'),
+
 ].map(c => c.toJSON());
 
 const rest =
@@ -1675,6 +1689,15 @@ client.once('clientReady', async () => {
     setInterval(handleSpecialBombRoll, SPECIAL_BOMB_ROLL_INTERVAL_MS);
     setInterval(handleSpecialBombTick, 60 * 1000);
     setInterval(() => handleShardSchedule(client, loadData, saveData), 60 * 1000);
+    setInterval(() => handleRadioTaisoSchedule(client, loadData, saveData), 60 * 1000);
+});
+
+client.on('voiceStateUpdate', (oldState, newState) => {
+    try {
+        handleRadioVoiceStateUpdate(newState, loadData, saveData);
+    } catch (err) {
+        console.error('[radioTaiso] voiceStateUpdate 処理でエラー:', err);
+    }
 });
 
 async function handleVoicePoints() {
@@ -2565,6 +2588,9 @@ client.on('interactionCreate', async interaction => {
                     '`/m-joinvote user:<対象> role:<ロール> [reason]` — ' +
                         '対象ユーザーへのロール付与（サーバー参加許可など）についてメンバー投票を作成します。',
                     '`/cr-set user:<対象> role:<ロール>` — 対象ユーザーのカラー設定用ロールを登録します。',
+                    '`/radio-start` — ラジオ体操イベントを開始します。期間中は毎朝8:50にBotが対象VCへ参加して' +
+                        '参加者を記録し、9:00にラジオ体操第一を再生。終了後に参加者一覧を投稿し、参加者に50ptを付与します。',
+                    '`/radio-end` — ラジオ体操イベントを終了し、参加日数ランキングを発表します。1位には1000ptを付与します。',
                     '`/db-result` は主催者に加えて管理者も結果確定が可能です。',
                     '`/mutebomb` は管理者、または特定のロールを持つ人が実行できます（下記参照）。'
                 ]
@@ -2601,7 +2627,7 @@ client.on('interactionCreate', async interaction => {
             '`/anonpoll`\n\n' +
             '🛠️ **管理者専用**\n' +
             '`/m-addt` `/m-addp` `/m-roleap` `/m-reset` `/m-bmode` ' +
-            '`/m-joinvote` `/cr-set` `/mutebomb`';
+            '`/m-joinvote` `/cr-set` `/mutebomb` `/radio-start` `/radio-end`';
 
         return interaction.reply({
             content: overviewText,
@@ -2718,6 +2744,49 @@ client.on('interactionCreate', async interaction => {
                 `<@${target.id}> の一日一回制限をリセットしました。\n` +
                 `再度 /omikuji を実行できます。`,
             ephemeral: true
+        });
+    }
+
+    if (interaction.commandName === 'radio-start') {
+        if (
+            !interaction.member.permissions.has(
+                PermissionsBitField.Flags.Administrator
+            )
+        ) {
+            return interaction.reply({
+                content: '管理者専用です。',
+                ephemeral: true
+            });
+        }
+
+        const result = startRadioEvent(data, saveData);
+
+        return interaction.reply({
+            content: result.message,
+            ephemeral: !result.ok
+        });
+    }
+
+    if (interaction.commandName === 'radio-end') {
+        if (
+            !interaction.member.permissions.has(
+                PermissionsBitField.Flags.Administrator
+            )
+        ) {
+            return interaction.reply({
+                content: '管理者専用です。',
+                ephemeral: true
+            });
+        }
+
+        await interaction.deferReply({ ephemeral: true });
+
+        const result = await endRadioEvent(client, data, saveData);
+
+        return interaction.editReply({
+            content: result.ok
+                ? 'ラジオ体操イベントを終了し、結果を発表しました。'
+                : result.message
         });
     }
 

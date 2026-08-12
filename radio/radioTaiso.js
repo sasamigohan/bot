@@ -1,0 +1,579 @@
+'use strict';
+
+/**
+ * ラジオ体操イベント
+ *
+ * 既存の破片通知（shard/shardScheduler.js）と同じ流儀で、
+ * client.once('clientReady', ...) 内から setInterval で毎分呼び出す。
+ *
+ * 1日の流れ（イベント期間中＝ /radio-start 済みのときだけ動く）:
+ *   1. 8:50 JST  対象VCに参加し、参加ログの収集を開始する
+ *                （このときVCにいる人＋以降に入ってきた人を記録）
+ *   2. 9:00 JST  ラジオ体操第一の音声を再生する
+ *   3. 再生終了  そこまでにVCにいた人を確定し、VCから切断。
+ *                【本日のラジオ体操参加者】を告知チャンネルに投稿し、
+ *                参加者に DAILY_POINT を付与、参加日を記録する
+ *   4. /radio-end（約1ヶ月のイベント終了時）で参加日数ランキングを発表し、
+ *      1位に TOP_BONUS_POINT を付与する
+ *
+ * 音声再生には @discordjs/voice 等の追加パッケージが必要。
+ * 未インストール／音源ファイルが無い場合でも Bot 全体は落とさず、
+ * 「再生だけスキップ」して参加記録とポイント付与は通常どおり行う。
+ */
+
+const fs = require('fs');
+const path = require('path');
+
+const { ensureUser, addPoints, addPointLog } = require('../utils/dataManager');
+
+// 対象のボイスチャンネル
+const RADIO_VC_ID = '1496874003413864570';
+// 参加者一覧・ランキングを投稿するテキストチャンネル
+const RADIO_ANNOUNCE_CHANNEL_ID = '1453193177581486100';
+
+// VCに入って参加ログの収集を始める時刻（JST）
+const RADIO_JOIN_HOUR = 8;
+const RADIO_JOIN_MINUTE = 50;
+// 音声を流し始める時刻（JST）
+const RADIO_PLAY_HOUR = 9;
+const RADIO_PLAY_MINUTE = 0;
+
+// 参加者1人あたりの1日のポイント
+const DAILY_POINT = 50;
+// 最終ランキング1位のボーナスポイント
+const TOP_BONUS_POINT = 1000;
+
+// 再生が終わらないまま居座るのを防ぐための保険（ラジオ体操第一は約3分半）
+const MAX_PLAY_MS = 10 * 60 * 1000;
+// 何らかの理由で再生を開始できなかった場合に、収集を打ち切る猶予
+const MAX_SESSION_MS = 30 * 60 * 1000;
+
+// 音源ファイルの探索先（RADIO_TAISO_AUDIO で明示指定も可能）
+const AUDIO_DIR = path.join(__dirname, '..', 'assets');
+const AUDIO_BASENAME = 'radio-taiso';
+const AUDIO_EXTENSIONS = ['.ogg', '.opus', '.webm', '.mp3', '.m4a', '.wav'];
+
+// joinVoiceChannel で作った接続。プロセス内でのみ保持する
+let currentConnection = null;
+
+function getJstDateString(date = new Date()) {
+    const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+    return jst.toISOString().slice(0, 10);
+}
+
+function getJstHourMinute(date = new Date()) {
+    const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+    return {
+        hour: jst.getUTCHours(),
+        minute: jst.getUTCMinutes()
+    };
+}
+
+function ensureRadioData(data) {
+    if (!data.radioTaiso) {
+        data.radioTaiso = {
+            active: false,
+            startedDate: null,
+            lastSessionDate: null,
+            attendance: {},
+            session: null
+        };
+    }
+
+    if (!data.radioTaiso.attendance) data.radioTaiso.attendance = {};
+
+    return data.radioTaiso;
+}
+
+/**
+ * 音声再生に必要なパッケージをまとめて読み込む。
+ * 未インストールなら null を返し、呼び出し側で再生をスキップする。
+ */
+function loadVoiceLibs() {
+    try {
+        const voice = require('@discordjs/voice');
+
+        // mp3等をそのまま流す場合は ffmpeg が必要。
+        // ffmpeg-static があればそのパスを prism-media に教える。
+        if (!process.env.FFMPEG_PATH) {
+            try {
+                const ffmpegPath = require('ffmpeg-static');
+                if (ffmpegPath) process.env.FFMPEG_PATH = ffmpegPath;
+            } catch {
+                // ffmpeg-static が無くても、システムのffmpegやOgg音源なら動く
+            }
+        }
+
+        return voice;
+    } catch (err) {
+        console.error('[radioTaiso] @discordjs/voice を読み込めませんでした:', err.message);
+        return null;
+    }
+}
+
+/**
+ * 再生する音源ファイルのパスを返す。見つからなければ null。
+ */
+function resolveAudioPath() {
+    const configured = process.env.RADIO_TAISO_AUDIO;
+
+    if (configured) {
+        const resolved = path.isAbsolute(configured)
+            ? configured
+            : path.join(__dirname, '..', configured);
+
+        return fs.existsSync(resolved) ? resolved : null;
+    }
+
+    for (const ext of AUDIO_EXTENSIONS) {
+        const candidate = path.join(AUDIO_DIR, `${AUDIO_BASENAME}${ext}`);
+        if (fs.existsSync(candidate)) return candidate;
+    }
+
+    return null;
+}
+
+/**
+ * 拡張子から @discordjs/voice の inputType を決める。
+ * Ogg/Opus・WebM/Opus ならffmpegも音声エンコーダも不要で最も軽い。
+ */
+function getInputType(voice, audioPath) {
+    const ext = path.extname(audioPath).toLowerCase();
+
+    if (ext === '.ogg' || ext === '.opus') return voice.StreamType.OggOpus;
+    if (ext === '.webm') return voice.StreamType.WebmOpus;
+
+    return voice.StreamType.Arbitrary;
+}
+
+async function fetchAnnounceChannel(client) {
+    try {
+        return await client.channels.fetch(RADIO_ANNOUNCE_CHANNEL_ID);
+    } catch (err) {
+        console.error('[radioTaiso] 告知チャンネルを取得できません:', err.message);
+        return null;
+    }
+}
+
+async function fetchVoiceChannel(client) {
+    try {
+        return await client.channels.fetch(RADIO_VC_ID);
+    } catch (err) {
+        console.error('[radioTaiso] ボイスチャンネルを取得できません:', err.message);
+        return null;
+    }
+}
+
+/**
+ * いまVCにいる人（Bot以外）を参加ログに追加する。
+ * @returns {boolean} 新しく追加された人がいたか
+ */
+function collectCurrentMembers(voiceChannel, session) {
+    if (!voiceChannel || !voiceChannel.members) return false;
+
+    let added = false;
+
+    for (const member of voiceChannel.members.values()) {
+        if (member.user.bot) continue;
+        if (session.participants.includes(member.id)) continue;
+
+        session.participants.push(member.id);
+        added = true;
+    }
+
+    return added;
+}
+
+function disconnectVoice() {
+    if (!currentConnection) return;
+
+    try {
+        currentConnection.destroy();
+    } catch {
+        // すでに切断済みの場合は何もしない
+    }
+
+    currentConnection = null;
+}
+
+/**
+ * 8:50: VCに参加して、その日の参加ログ収集を始める
+ */
+async function startMorningSession(client, data, saveData, today) {
+    const radio = ensureRadioData(data);
+    const voiceChannel = await fetchVoiceChannel(client);
+
+    radio.session = {
+        date: today,
+        participants: [],
+        phase: 'collecting',
+        startedAt: Date.now(),
+        playStartedAt: null
+    };
+    radio.lastSessionDate = today;
+
+    if (voiceChannel) {
+        collectCurrentMembers(voiceChannel, radio.session);
+    }
+
+    saveData(data);
+
+    if (!voiceChannel) return;
+
+    const voice = loadVoiceLibs();
+    if (!voice) return;
+
+    try {
+        disconnectVoice();
+
+        currentConnection = voice.joinVoiceChannel({
+            channelId: voiceChannel.id,
+            guildId: voiceChannel.guild.id,
+            adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+            selfDeaf: false,
+            selfMute: false
+        });
+    } catch (err) {
+        console.error('[radioTaiso] VCへの参加に失敗しました:', err.message);
+        currentConnection = null;
+    }
+}
+
+/**
+ * 9:00: 音声を再生する。再生終了（または失敗）後に締め処理へ進む。
+ */
+async function playRadioTaiso(client, data, saveData) {
+    const radio = ensureRadioData(data);
+    const session = radio.session;
+
+    if (!session) return;
+
+    session.phase = 'playing';
+    session.playStartedAt = Date.now();
+    saveData(data);
+
+    const voiceChannel = await fetchVoiceChannel(client);
+    const voice = loadVoiceLibs();
+    const audioPath = resolveAudioPath();
+
+    if (!voice || !voiceChannel || !audioPath) {
+        if (!audioPath) {
+            console.error(
+                '[radioTaiso] 音源ファイルが見つかりません。' +
+                `${AUDIO_DIR} に ${AUDIO_BASENAME}.ogg 等を置くか、` +
+                'RADIO_TAISO_AUDIO で指定してください。'
+            );
+        }
+
+        await finishMorningSession(client, data, saveData, { played: false });
+        return;
+    }
+
+    try {
+        if (!currentConnection) {
+            currentConnection = voice.joinVoiceChannel({
+                channelId: voiceChannel.id,
+                guildId: voiceChannel.guild.id,
+                adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+                selfDeaf: false,
+                selfMute: false
+            });
+        }
+
+        await voice.entersState(
+            currentConnection,
+            voice.VoiceConnectionStatus.Ready,
+            20 * 1000
+        );
+
+        const player = voice.createAudioPlayer();
+        const resource = voice.createAudioResource(fs.createReadStream(audioPath), {
+            inputType: getInputType(voice, audioPath)
+        });
+
+        currentConnection.subscribe(player);
+        player.play(resource);
+
+        await voice.entersState(player, voice.AudioPlayerStatus.Playing, 20 * 1000);
+        await voice.entersState(player, voice.AudioPlayerStatus.Idle, MAX_PLAY_MS);
+
+        player.stop();
+
+        await finishMorningSession(client, data, saveData, { played: true });
+    } catch (err) {
+        console.error('[radioTaiso] 音声の再生に失敗しました:', err.message);
+        await finishMorningSession(client, data, saveData, { played: false });
+    }
+}
+
+/**
+ * 再生終了後: 参加者を確定してポイント付与・参加日記録・一覧投稿を行う
+ */
+async function finishMorningSession(client, data, saveData, { played }) {
+    const radio = ensureRadioData(data);
+    const session = radio.session;
+
+    if (!session) {
+        disconnectVoice();
+        return;
+    }
+
+    const voiceChannel = await fetchVoiceChannel(client);
+    collectCurrentMembers(voiceChannel, session);
+
+    disconnectVoice();
+
+    const participants = [...new Set(session.participants)];
+    const date = session.date;
+
+    for (const participantId of participants) {
+        ensureUser(data, participantId);
+
+        if (!radio.attendance[participantId]) radio.attendance[participantId] = [];
+
+        if (!radio.attendance[participantId].includes(date)) {
+            radio.attendance[participantId].push(date);
+        }
+
+        addPoints(data, participantId, DAILY_POINT, { addToLevel: false });
+
+        addPointLog(data, {
+            userId: participantId,
+            type: 'radio',
+            amount: DAILY_POINT,
+            detail: `ラジオ体操 ${date}`
+        });
+    }
+
+    radio.session = null;
+    saveData(data);
+
+    const channel = await fetchAnnounceChannel(client);
+    if (!channel) return;
+
+    const lines = [`**【本日のラジオ体操参加者】** (${date})`];
+
+    if (participants.length === 0) {
+        lines.push('本日の参加者はいませんでした。');
+    } else {
+        participants.forEach((participantId, index) => {
+            const days = (radio.attendance[participantId] || []).length;
+            lines.push(`${index + 1}. <@${participantId}>（通算 ${days}日目）`);
+        });
+
+        lines.push('');
+        lines.push(`参加者 ${participants.length} 名に ${DAILY_POINT}pt を付与しました。`);
+    }
+
+    if (!played) {
+        lines.push('※音声の再生に失敗したため、記録のみ行いました。');
+    }
+
+    try {
+        await channel.send({
+            content: lines.join('\n'),
+            allowedMentions: { parse: [] }
+        });
+    } catch (err) {
+        console.error('[radioTaiso] 参加者一覧の投稿に失敗しました:', err.message);
+    }
+}
+
+/**
+ * 毎分呼ばれるスケジューラ本体
+ */
+async function handleRadioTaisoSchedule(client, loadData, saveData) {
+    const data = loadData();
+    const radio = ensureRadioData(data);
+
+    if (!radio.active) return;
+
+    const today = getJstDateString();
+    const { hour, minute } = getJstHourMinute();
+    const session = radio.session;
+
+    // 日付をまたいで残ってしまったセッションは破棄する
+    if (session && session.date !== today) {
+        radio.session = null;
+        disconnectVoice();
+        saveData(data);
+        return;
+    }
+
+    if (
+        !session &&
+        hour === RADIO_JOIN_HOUR &&
+        minute === RADIO_JOIN_MINUTE &&
+        radio.lastSessionDate !== today
+    ) {
+        await startMorningSession(client, data, saveData, today);
+        return;
+    }
+
+    if (!session) return;
+
+    if (
+        session.phase === 'collecting' &&
+        (hour > RADIO_PLAY_HOUR ||
+            (hour === RADIO_PLAY_HOUR && minute >= RADIO_PLAY_MINUTE))
+    ) {
+        await playRadioTaiso(client, data, saveData);
+        return;
+    }
+
+    // 収集中は、毎分VCの在室者を拾って取りこぼしを防ぐ
+    if (session.phase === 'collecting') {
+        const voiceChannel = await fetchVoiceChannel(client);
+
+        if (collectCurrentMembers(voiceChannel, session)) {
+            saveData(data);
+        }
+
+        return;
+    }
+
+    // 再生中のまま長時間残っている場合（再起動などで再生Promiseが失われたとき）の保険
+    if (
+        session.phase === 'playing' &&
+        session.startedAt &&
+        Date.now() - session.startedAt > MAX_SESSION_MS
+    ) {
+        await finishMorningSession(client, data, saveData, { played: false });
+    }
+}
+
+/**
+ * voiceStateUpdate から呼ぶ。収集中に対象VCへ入ってきた人を記録する。
+ */
+function handleRadioVoiceStateUpdate(newState, loadData, saveData) {
+    if (!newState || !newState.member || newState.member.user.bot) return;
+    if (newState.channelId !== RADIO_VC_ID) return;
+
+    const data = loadData();
+    const radio = ensureRadioData(data);
+
+    if (!radio.active || !radio.session) return;
+    if (radio.session.phase === 'finished') return;
+    if (radio.session.participants.includes(newState.member.id)) return;
+
+    radio.session.participants.push(newState.member.id);
+    saveData(data);
+}
+
+/**
+ * /radio-start: 約1ヶ月のラジオ体操イベントを開始する
+ */
+function startRadioEvent(data, saveData) {
+    const radio = ensureRadioData(data);
+
+    if (radio.active) {
+        return {
+            ok: false,
+            message: `ラジオ体操イベントはすでに開催中です（開始日: ${radio.startedDate}）。`
+        };
+    }
+
+    radio.active = true;
+    radio.startedDate = getJstDateString();
+    radio.lastSessionDate = null;
+    radio.attendance = {};
+    radio.session = null;
+
+    saveData(data);
+
+    return {
+        ok: true,
+        message:
+            `ラジオ体操イベントを開始しました（${radio.startedDate}〜）。\n` +
+            `毎朝 ${RADIO_JOIN_HOUR}:${String(RADIO_JOIN_MINUTE).padStart(2, '0')} に <#${RADIO_VC_ID}> へ参加し、` +
+            `${RADIO_PLAY_HOUR}:${String(RADIO_PLAY_MINUTE).padStart(2, '0')} からラジオ体操第一を再生します。\n` +
+            `参加者には毎日 ${DAILY_POINT}pt、終了時の1位には ${TOP_BONUS_POINT}pt を付与します。`
+    };
+}
+
+/**
+ * /radio-end: イベントを終了し、参加日数ランキングを発表する
+ */
+async function endRadioEvent(client, data, saveData) {
+    const radio = ensureRadioData(data);
+
+    if (!radio.active) {
+        return {
+            ok: false,
+            message: '現在、ラジオ体操イベントは開催されていません。'
+        };
+    }
+
+    const ranking = Object.entries(radio.attendance)
+        .map(([userId, dates]) => ({ userId, days: (dates || []).length }))
+        .filter(entry => entry.days > 0)
+        .sort((a, b) => b.days - a.days);
+
+    const lines = [
+        '**【ラジオ体操 最終結果】**',
+        `期間: ${radio.startedDate} 〜 ${getJstDateString()}`,
+        ''
+    ];
+
+    if (ranking.length === 0) {
+        lines.push('参加記録がありませんでした。');
+    } else {
+        const topDays = ranking[0].days;
+
+        ranking.forEach((entry, index) => {
+            const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`;
+            lines.push(`${medal} <@${entry.userId}> — ${entry.days}日`);
+        });
+
+        const winners = ranking.filter(entry => entry.days === topDays);
+
+        for (const winner of winners) {
+            ensureUser(data, winner.userId);
+
+            addPoints(data, winner.userId, TOP_BONUS_POINT, { addToLevel: false });
+
+            addPointLog(data, {
+                userId: winner.userId,
+                type: 'radio-bonus',
+                amount: TOP_BONUS_POINT,
+                detail: `ラジオ体操1位 ${winner.days}日`
+            });
+        }
+
+        lines.push('');
+        lines.push(
+            `🎉 1位 ${winners.map(w => `<@${w.userId}>`).join(' ')} に ${TOP_BONUS_POINT}pt を付与しました！`
+        );
+    }
+
+    radio.active = false;
+    radio.session = null;
+    radio.lastSessionDate = null;
+
+    disconnectVoice();
+    saveData(data);
+
+    const content = lines.join('\n');
+    const channel = await fetchAnnounceChannel(client);
+
+    if (channel) {
+        try {
+            await channel.send({ content, allowedMentions: { parse: [] } });
+        } catch (err) {
+            console.error('[radioTaiso] 最終結果の投稿に失敗しました:', err.message);
+        }
+    }
+
+    return { ok: true, message: content };
+}
+
+module.exports = {
+    handleRadioTaisoSchedule,
+    handleRadioVoiceStateUpdate,
+    startRadioEvent,
+    endRadioEvent,
+    RADIO_VC_ID,
+    RADIO_ANNOUNCE_CHANNEL_ID,
+    DAILY_POINT,
+    TOP_BONUS_POINT
+};

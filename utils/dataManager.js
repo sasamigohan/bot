@@ -36,6 +36,13 @@ let cache = {
         lastDailySentDate: null,
         sentSessionKeys: []
     },
+    radioTaiso: {
+        active: false,
+        startedDate: null,
+        lastSessionDate: null,
+        attendance: {},
+        session: null
+    },
     bombMode: {
         active: false,
         type: null,
@@ -68,6 +75,13 @@ function createDefaultData() {
             isSummerTime: true,
             lastDailySentDate: null,
             sentSessionKeys: []
+        },
+        radioTaiso: {
+            active: false,
+            startedDate: null,
+            lastSessionDate: null,
+            attendance: {},
+            session: null
         },
         bombMode: {
             active: false,
@@ -142,6 +156,35 @@ function normalizeData(data) {
         if (data.shardData.isSummerTime === undefined) data.shardData.isSummerTime = true;
         if (data.shardData.lastDailySentDate === undefined) data.shardData.lastDailySentDate = null;
         if (!Array.isArray(data.shardData.sentSessionKeys)) data.shardData.sentSessionKeys = [];
+    }
+    if (!data.radioTaiso) {
+        data.radioTaiso = {
+            active: false,
+            startedDate: null,
+            lastSessionDate: null,
+            attendance: {},
+            session: null
+        };
+    } else {
+        data.radioTaiso.active = Boolean(data.radioTaiso.active);
+        data.radioTaiso.startedDate = data.radioTaiso.startedDate || null;
+        data.radioTaiso.lastSessionDate = data.radioTaiso.lastSessionDate || null;
+        if (!data.radioTaiso.attendance) data.radioTaiso.attendance = {};
+        if (data.radioTaiso.session === undefined) data.radioTaiso.session = null;
+
+        // 参加日リストは重複なしの配列として保持する
+        for (const key of Object.keys(data.radioTaiso.attendance)) {
+            const dates = data.radioTaiso.attendance[key];
+            data.radioTaiso.attendance[key] =
+                Array.isArray(dates) ? [...new Set(dates)] : [];
+        }
+
+        if (data.radioTaiso.session) {
+            const session = data.radioTaiso.session;
+            if (!Array.isArray(session.participants)) session.participants = [];
+            session.participants = [...new Set(session.participants)];
+            if (!session.phase) session.phase = 'collecting';
+        }
     }
     if (!data.bombMode) {
         data.bombMode = {
