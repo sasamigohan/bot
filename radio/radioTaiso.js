@@ -24,6 +24,8 @@
 const fs = require('fs');
 const path = require('path');
 
+const { PermissionsBitField } = require('discord.js');
+
 const { ensureUser, addPoints, addPointLog } = require('../utils/dataManager');
 
 // 対象のボイスチャンネル
@@ -45,6 +47,8 @@ const TOP_BONUS_POINT = 1000;
 
 // 再生が終わらないまま居座るのを防ぐための保険（ラジオ体操第一は約3分半）
 const MAX_PLAY_MS = 10 * 60 * 1000;
+// ボイス接続がReadyになるのを待つ上限
+const VOICE_READY_TIMEOUT_MS = 30 * 1000;
 // 何らかの理由で再生を開始できなかった場合に、収集を打ち切る猶予
 const MAX_SESSION_MS = 30 * 60 * 1000;
 
@@ -323,19 +327,19 @@ async function startMorningSession(client, data, saveData, today) {
     const voice = loadVoiceLibs();
     if (!voice) return;
 
-    try {
-        disconnectVoice();
+    const permissionError = checkVoicePermissions(voiceChannel);
 
-        currentConnection = voice.joinVoiceChannel({
-            channelId: voiceChannel.id,
-            guildId: voiceChannel.guild.id,
-            adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-            selfDeaf: false,
-            selfMute: false
-        });
-    } catch (err) {
-        console.error('[radioTaiso] VCへの参加に失敗しました:', err.message);
-        currentConnection = null;
+    if (permissionError) {
+        console.error('[radioTaiso] VCへの参加をスキップしました:', permissionError);
+        return;
+    }
+
+    // 9:00の再生前にあらかじめ接続しておく。
+    // ここで失敗しても記録は続けたいので、結果はログに出すだけにする。
+    const connection = await ensureReadyConnection(voice, voiceChannel);
+
+    if (!connection.ok) {
+        console.error('[radioTaiso] VCへの参加に失敗しました:', connection.reason);
     }
 }
 
@@ -373,6 +377,116 @@ async function playRadioTaiso(client, data, saveData) {
  * try/catch では捕まえられずプロセスごと落ちる。
  * そのため play() より前に必ずハンドラを登録する。
  */
+/**
+ * Botが対象VCに入って喋れる状態かを事前に確認する。
+ * 権限不足だと joinVoiceChannel はエラーを投げず、
+ * ただReadyにならないまま entersState がタイムアウトするだけなので、
+ * ここで先に潰しておくと原因が一目で分かる。
+ * @returns {string|null} 問題があればその説明、無ければ null
+ */
+function checkVoicePermissions(voiceChannel) {
+    const me = voiceChannel.guild.members.me;
+
+    if (!me) return 'Botのメンバー情報を取得できませんでした。';
+
+    const perms = voiceChannel.permissionsFor(me);
+
+    if (!perms) return 'BotのVCに対する権限を取得できませんでした。';
+
+    const missing = [];
+
+    if (!perms.has(PermissionsBitField.Flags.ViewChannel)) missing.push('チャンネルを見る');
+    if (!perms.has(PermissionsBitField.Flags.Connect)) missing.push('接続');
+    if (!perms.has(PermissionsBitField.Flags.Speak)) missing.push('発言');
+
+    if (missing.length > 0) {
+        return `Botに必要な権限がありません: ${missing.join(' / ')}`;
+    }
+
+    if (
+        voiceChannel.userLimit > 0 &&
+        voiceChannel.members.size >= voiceChannel.userLimit &&
+        !perms.has(PermissionsBitField.Flags.MoveMembers)
+    ) {
+        return 'VCが人数上限に達しているため接続できません。';
+    }
+
+    return null;
+}
+
+/**
+ * Ready状態のボイス接続を用意する。
+ *
+ * 前回の失敗で壊れた接続が currentConnection に残っていると、
+ * それを使い回した結果 entersState が延々タイムアウトする
+ * （= "The operation was aborted"）ため、状態を確認して作り直す。
+ *
+ * Readyにならなかった場合は最終状態を理由に含める。
+ * signalling で止まる → ゲートウェイ/権限側の問題、
+ * connecting で止まる → UDP がブロックされている可能性が高い、と切り分けできる。
+ */
+async function ensureReadyConnection(voice, voiceChannel) {
+    const reusable =
+        currentConnection &&
+        currentConnection.state.status !== voice.VoiceConnectionStatus.Destroyed &&
+        currentConnection.state.status !== voice.VoiceConnectionStatus.Disconnected &&
+        currentConnection.joinConfig.channelId === voiceChannel.id;
+
+    if (!reusable) {
+        disconnectVoice();
+
+        currentConnection = voice.joinVoiceChannel({
+            channelId: voiceChannel.id,
+            guildId: voiceChannel.guild.id,
+            adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+            selfDeaf: false,
+            selfMute: false
+        });
+
+        currentConnection.on('stateChange', (oldState, newState) => {
+            console.log(`[radioTaiso] voice connection: ${oldState.status} -> ${newState.status}`);
+        });
+
+        currentConnection.on('error', err => {
+            console.error('[radioTaiso] voice connection error:', err);
+        });
+    }
+
+    try {
+        await voice.entersState(
+            currentConnection,
+            voice.VoiceConnectionStatus.Ready,
+            VOICE_READY_TIMEOUT_MS
+        );
+
+        return { ok: true };
+    } catch {
+        const lastStatus = currentConnection ? currentConnection.state.status : 'なし';
+
+        disconnectVoice();
+
+        let hint = '';
+
+        if (lastStatus === 'signalling') {
+            hint =
+                ' Discordからボイスサーバー情報が返ってきていません。' +
+                'Botの権限、またはGatewayIntentBits.GuildVoiceStatesを確認してください。';
+        } else if (lastStatus === 'connecting') {
+            hint =
+                ' Discordのボイスサーバーへ UDP で到達できていません。' +
+                'ファイアウォール（Oracle Cloudのセキュリティリスト/iptables）で' +
+                '外向きUDPが塞がれていないか確認してください。';
+        }
+
+        return {
+            ok: false,
+            reason:
+                `${VOICE_READY_TIMEOUT_MS / 1000}秒以内にボイス接続がReadyになりませんでした` +
+                `（最終状態: ${lastStatus}）。${hint}`
+        };
+    }
+}
+
 async function playAudioInChannel(voiceChannel) {
     if (!voiceChannel) {
         return { ok: false, reason: 'ボイスチャンネルを取得できませんでした。' };
@@ -386,25 +500,15 @@ async function playAudioInChannel(voiceChannel) {
         return { ok: false, reason: '@discordjs/voice を読み込めませんでした。' };
     }
 
+    const permissionError = checkVoicePermissions(voiceChannel);
+    if (permissionError) return { ok: false, reason: permissionError };
+
     const audioPath = setup.audioPath;
     let player = null;
 
     try {
-        if (!currentConnection) {
-            currentConnection = voice.joinVoiceChannel({
-                channelId: voiceChannel.id,
-                guildId: voiceChannel.guild.id,
-                adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-                selfDeaf: false,
-                selfMute: false
-            });
-        }
-
-        await voice.entersState(
-            currentConnection,
-            voice.VoiceConnectionStatus.Ready,
-            20 * 1000
-        );
+        const connection = await ensureReadyConnection(voice, voiceChannel);
+        if (!connection.ok) return { ok: false, reason: connection.reason };
 
         player = voice.createAudioPlayer({
             behaviors: { noSubscriber: voice.NoSubscriberBehavior.Play }
