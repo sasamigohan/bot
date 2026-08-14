@@ -427,6 +427,98 @@ function checkVoicePermissions(voiceChannel) {
 }
 
 /**
+ * signalling から進まなくなった接続を救済する。
+ *
+ * @discordjs/voice は configureNetworking() を VOICE_SERVER_UPDATE の
+ * 到着時にしか呼ばない（addStatePacket からは呼ばれない）。
+ * そのため server が state より先に確定すると、両方のパケットが揃っても
+ * 接続処理が二度と走らず、永久に signalling のままになる。
+ *
+ * 数秒ごとに状態を見て、
+ *   - 両方揃っているのに進んでいない → configureNetworking() を直接叩く
+ *   - server だけ来ている           → rejoin() で state を再送させる
+ * ことで復帰させる。
+ */
+function startSignallingRecovery(voice) {
+    return setInterval(() => {
+        if (!currentConnection) return;
+        if (currentConnection.state.status !== voice.VoiceConnectionStatus.Signalling) return;
+
+        const packets = currentConnection.packets || {};
+
+        try {
+            if (packets.state && packets.server) {
+                console.warn(
+                    '[radioTaiso] パケットは揃っているのに接続が進んでいないため、' +
+                    'configureNetworking() を手動実行します'
+                );
+                currentConnection.configureNetworking();
+                return;
+            }
+
+            if (packets.server && !packets.state) {
+                console.warn(
+                    '[radioTaiso] VOICE_STATE_UPDATE が接続に届いていないため rejoin します'
+                );
+                currentConnection.rejoin();
+            }
+        } catch (err) {
+            console.error('[radioTaiso] signalling 復旧処理でエラー:', err.message);
+        }
+    }, 5000);
+}
+
+/**
+ * discord.js の voiceAdapterCreator をラップし、
+ * @discordjs/voice との実際のやり取りを観測できるようにする。
+ *
+ * discord.js 側は adapters.get(guildId)?.onVoiceStateUpdate(...) という
+ * オプショナルチェーンで転送するため、アダプタ未登録なら何も起きず
+ * ログにも残らない。ここで実際の呼び出し回数を数えることで、
+ * 「discord.jsが転送しようとした」と「VoiceConnectionが受け取った」を区別する。
+ */
+function createInstrumentedAdapter(guild, log) {
+    return methods => {
+        const wrapped = {
+            onVoiceStateUpdate: packet => {
+                log.state++;
+                console.log('[radioTaiso] adapter: onVoiceStateUpdate 受領');
+                return methods.onVoiceStateUpdate(packet);
+            },
+            onVoiceServerUpdate: packet => {
+                log.server++;
+                console.log('[radioTaiso] adapter: onVoiceServerUpdate 受領');
+                return methods.onVoiceServerUpdate(packet);
+            },
+            destroy: () => {
+                console.log('[radioTaiso] adapter: destroy');
+                return methods.destroy();
+            }
+        };
+
+        const inner = guild.voiceAdapterCreator(wrapped);
+
+        return {
+            sendPayload: data => {
+                const ok = inner.sendPayload(data);
+
+                if (ok) {
+                    log.sent++;
+                } else {
+                    log.sendFailed++;
+                    console.error(
+                        '[radioTaiso] adapter: sendPayload 失敗（シャードがReadyではありません）'
+                    );
+                }
+
+                return ok;
+            },
+            destroy: inner.destroy
+        };
+    };
+}
+
+/**
  * 接続前に、残骸になっているボイス状態を掃除する。
  *
  * signalling で固まる典型パターンが2つあり、どちらもこれで解ける:
@@ -567,7 +659,7 @@ function watchVoiceGateway(client, guildId) {
 /**
  * 観測結果から原因を言葉にする
  */
-function describeGatewayFindings(seen) {
+function describeGatewayFindings(seen, adapterLog = null) {
     if (!seen.stateUpdate && !seen.serverUpdate) {
         return (
             '\n【診断】接続要求に対しDiscordから何も返ってきていません' +
@@ -589,6 +681,41 @@ function describeGatewayFindings(seen) {
 
     // ここから先は「パケットは両方届いている」ケース。
     // discord.js が @discordjs/voice へ転送したかどうかで切り分ける。
+    if (adapterLog && (adapterLog.state === 0 || adapterLog.server === 0)) {
+        const missing = [];
+        if (!adapterLog.state) missing.push('state update');
+        if (!adapterLog.server) missing.push('server update');
+
+        return (
+            `\n【診断】discord.jsは転送処理まで到達していますが、` +
+            `VoiceConnection が ${missing.join(' と ')} を受け取っていません` +
+            `（adapter受領: state=${adapterLog.state}, server=${adapterLog.server}）。` +
+            'client.voice.adapters にアダプタが登録されていない状態です。' +
+            'discord.js と @discordjs/voice が別々の依存として二重に入っている' +
+            '可能性があるため、npm ls discord.js @discordjs/voice で重複を確認してください。'
+        );
+    }
+
+    if (adapterLog && adapterLog.sendFailed > 0) {
+        return (
+            `\n【診断】ゲートウェイへの送信が ${adapterLog.sendFailed} 回失敗しています。` +
+            'シャードがReady状態ではありません。接続が不安定な可能性があります。'
+        );
+    }
+
+    if (adapterLog && adapterLog.packets) {
+        const { state, server } = adapterLog.packets;
+
+        if (state && server) {
+            return (
+                '\n【診断】VoiceConnection は必要なパケットを両方保持しているのに' +
+                '接続処理へ進んでいません（configureNetworking が動いていない）。' +
+                '@discordjs/voice の内部で処理が止まっています。' +
+                'バージョンを変えて npm install @discordjs/voice@0.17.0 を試してください。'
+            );
+        }
+    }
+
     if (!seen.forwardedState || !seen.forwardedServer) {
         const missing = [];
         if (!seen.forwardedState) missing.push('state update');
@@ -635,6 +762,7 @@ async function ensureReadyConnection(voice, voiceChannel, client = null) {
     // 1回目が signalling で固まるのは古いボイス状態が原因のことが多く、
     // その失敗自体が状態を解除してくれるため、掃除してもう一度試す価値がある。
     let lastStatus = 'なし';
+    let lastAdapterLog = null;
 
     const watcher = watchVoiceGateway(client, voiceChannel.guild.id);
 
@@ -643,13 +771,17 @@ async function ensureReadyConnection(voice, voiceChannel, client = null) {
             await ensureSelfMemberCached(voiceChannel.guild, client);
             await clearStaleVoiceState(voice, voiceChannel.guild);
 
+            const adapterLog = { state: 0, server: 0, sent: 0, sendFailed: 0 };
+
             currentConnection = voice.joinVoiceChannel({
                 channelId: voiceChannel.id,
                 guildId: voiceChannel.guild.id,
-                adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+                adapterCreator: createInstrumentedAdapter(voiceChannel.guild, adapterLog),
                 selfDeaf: false,
                 selfMute: false
             });
+
+            lastAdapterLog = adapterLog;
 
             currentConnection.on('stateChange', (oldState, newState) => {
                 console.log(
@@ -661,6 +793,8 @@ async function ensureReadyConnection(voice, voiceChannel, client = null) {
                 console.error('[radioTaiso] voice connection error:', err);
             });
 
+            const recovery = startSignallingRecovery(voice);
+
             try {
                 await voice.entersState(
                     currentConnection,
@@ -668,13 +802,31 @@ async function ensureReadyConnection(voice, voiceChannel, client = null) {
                     VOICE_READY_TIMEOUT_MS
                 );
 
+                clearInterval(recovery);
+
                 return { ok: true };
             } catch {
+                clearInterval(recovery);
+
                 lastStatus = currentConnection ? currentConnection.state.status : 'なし';
 
+                // VoiceConnection が内部に溜めたパケット。
+                // 両方揃っているのに進まないのか、片方が届いていないのかが分かる。
+                const packets =
+                    currentConnection && currentConnection.packets
+                        ? {
+                              state: Boolean(currentConnection.packets.state),
+                              server: Boolean(currentConnection.packets.server)
+                          }
+                        : null;
+
                 console.error(
-                    `[radioTaiso] 接続試行 ${attempt}/2 失敗（最終状態: ${lastStatus}）`
+                    `[radioTaiso] 接続試行 ${attempt}/2 失敗（最終状態: ${lastStatus}）` +
+                    ` adapter=${JSON.stringify(adapterLog)}` +
+                    ` packets=${JSON.stringify(packets)}`
                 );
+
+                if (lastAdapterLog) lastAdapterLog.packets = packets;
 
                 disconnectVoice();
             }
@@ -693,7 +845,7 @@ async function ensureReadyConnection(voice, voiceChannel, client = null) {
                 client.options.intents.has(GatewayIntentBits.GuildVoiceStates));
 
         hint = intentOk
-            ? describeGatewayFindings(watcher.seen)
+            ? describeGatewayFindings(watcher.seen, lastAdapterLog)
             : '\n【診断】GatewayIntentBits.GuildVoiceStates が有効になっていません。これが原因です。';
     } else if (lastStatus === 'connecting') {
         hint =
