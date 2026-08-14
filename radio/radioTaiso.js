@@ -427,6 +427,29 @@ function checkVoicePermissions(voiceChannel) {
 }
 
 /**
+ * 音声WebSocketの切断コードを日本語で説明する。
+ * https://discord.com/developers/docs/topics/opcodes-and-status-codes#voice
+ */
+function describeVoiceCloseCode(code) {
+    const table = {
+        4001: '不明なオペコード',
+        4002: 'ペイロードのデコードに失敗',
+        4003: '認証されていません',
+        4004: '認証に失敗（トークンが不正）',
+        4005: '既に認証済み',
+        4006: 'セッションが無効です',
+        4009: 'セッションがタイムアウト',
+        4011: 'サーバーが見つかりません',
+        4012: '不明なプロトコル',
+        4014: '切断されました（キック/チャンネル削除/権限喪失）',
+        4015: 'ボイスサーバーがクラッシュ',
+        4016: '不明な暗号化方式'
+    };
+
+    return table[code] || '詳細不明';
+}
+
+/**
  * 高番号ポートの外向きUDPが通るかを実測する。
  *
  * Discordのボイスは 50000番台などの高番号UDPを使う。
@@ -513,68 +536,6 @@ function getDependencyReport() {
     } catch (err) {
         return `依存レポートを取得できません: ${err.message}`;
     }
-}
-
-/**
- * signalling から進まなくなった接続を救済する。
- *
- * @discordjs/voice は configureNetworking() を VOICE_SERVER_UPDATE の
- * 到着時にしか呼ばない（addStatePacket からは呼ばれない）。
- * そのため server が state より先に確定すると、両方のパケットが揃っても
- * 接続処理が二度と走らず、永久に signalling のままになる。
- *
- * 数秒ごとに状態を見て、
- *   - 両方揃っているのに進んでいない → configureNetworking() を直接叩く
- *   - server だけ来ている           → rejoin() で state を再送させる
- * ことで復帰させる。
- */
-function startSignallingRecovery(voice, log) {
-    return setInterval(() => {
-        if (!currentConnection) return;
-        if (currentConnection.state.status !== voice.VoiceConnectionStatus.Signalling) return;
-
-        const packets = currentConnection.packets || {};
-
-        try {
-            if (packets.state && packets.server) {
-                console.warn(
-                    '[radioTaiso] パケットは揃っているのに接続が進んでいないため、' +
-                    'configureNetworking() を手動実行します'
-                );
-
-                log.attempted++;
-                currentConnection.configureNetworking();
-
-                // 呼んでも状態が変わらない場合、早期returnの条件に該当している
-                if (
-                    currentConnection.state.status === voice.VoiceConnectionStatus.Signalling
-                ) {
-                    const server = packets.server || {};
-                    log.noEffect++;
-                    log.endpointMissing = !server.endpoint;
-
-                    console.error(
-                        '[radioTaiso] configureNetworking() を呼んでも状態が変わりません。' +
-                        `endpoint=${server.endpoint} token=${server.token ? 'あり' : 'なし'} ` +
-                        `session_id=${packets.state && packets.state.session_id ? 'あり' : 'なし'}`
-                    );
-                }
-
-                return;
-            }
-
-            if (packets.server && !packets.state) {
-                console.warn(
-                    '[radioTaiso] VOICE_STATE_UPDATE が接続に届いていないため rejoin します'
-                );
-                log.rejoined++;
-                currentConnection.rejoin();
-            }
-        } catch (err) {
-            log.error = err.message;
-            console.error('[radioTaiso] signalling 復旧処理でエラー:', err);
-        }
-    }, 5000);
 }
 
 /**
@@ -816,6 +777,34 @@ function describeGatewayFindings(seen, adapterLog = null, udpCheck = null) {
         const { state, server } = adapterLog.packets;
 
         if (state && server) {
+            // 音声WebSocketの切断コードが取れていれば、それが最も確実な情報
+            if (adapterLog.closeCode) {
+                const code = adapterLog.closeCode;
+                let advice = '';
+
+                if (code === 4006 || code === 4009) {
+                    advice =
+                        ' Botのゲートウェイセッションと音声セッションが食い違っています。' +
+                        '同じトークンで別のプロセスが接続していないか、' +
+                        'Developer Portalでトークンを再生成した直後でないかを確認してください。';
+                } else if (code === 4004) {
+                    advice = ' トークンが不正です。.env の TOKEN を確認してください。';
+                } else if (code === 4014) {
+                    advice =
+                        ' Botがチャンネルからキックされたか、接続権限を失っています。' +
+                        'VCの権限設定を確認してください。';
+                } else if (code === 4016 || code === 4012) {
+                    advice =
+                        ' 暗号化方式のネゴシエーションに失敗しています。' +
+                        'libsodium-wrappers が正しく入っているか確認してください。';
+                }
+
+                return (
+                    `\n【診断】★音声WebSocketが code=${code}` +
+                    `（${describeVoiceCloseCode(code)}）で切断されています。${advice}`
+                );
+            }
+
             // ここまで来ている場合、接続は connecting まで進んだうえで
             // 音声サーバーとの通信に失敗し、signalling に差し戻されている。
             // 原因のほとんどは高番号UDPが外に出られないこと。
@@ -909,7 +898,8 @@ async function ensureReadyConnection(voice, voiceChannel, client = null) {
                 attempted: 0,
                 noEffect: 0,
                 rejoined: 0,
-                error: null
+                error: null,
+                closeCode: null
             };
 
             currentConnection = voice.joinVoiceChannel({
@@ -926,6 +916,23 @@ async function ensureReadyConnection(voice, voiceChannel, client = null) {
                 console.log('[radioTaiso][voice-debug]', message);
             });
 
+            // 音声WebSocketの切断コードを拾う。
+            // Networking インスタンスは再接続のたびに作り直されるので、
+            // stateChange で新しいものが現れたら都度購読する。
+            currentConnection.on('stateChange', (oldState, newState) => {
+                const networking = newState.networking;
+
+                if (!networking || networking === oldState.networking) return;
+
+                networking.on('close', code => {
+                    adapterLog.closeCode = code;
+                    console.error(
+                        `[radioTaiso] 音声WebSocketが切断されました: code=${code}` +
+                        ` (${describeVoiceCloseCode(code)})`
+                    );
+                });
+            });
+
             lastAdapterLog = adapterLog;
 
             currentConnection.on('stateChange', (oldState, newState) => {
@@ -938,8 +945,6 @@ async function ensureReadyConnection(voice, voiceChannel, client = null) {
                 console.error('[radioTaiso] voice connection error:', err);
             });
 
-            const recovery = startSignallingRecovery(voice, adapterLog);
-
             try {
                 await voice.entersState(
                     currentConnection,
@@ -947,11 +952,9 @@ async function ensureReadyConnection(voice, voiceChannel, client = null) {
                     VOICE_READY_TIMEOUT_MS
                 );
 
-                clearInterval(recovery);
 
                 return { ok: true };
             } catch {
-                clearInterval(recovery);
 
                 lastStatus = currentConnection ? currentConnection.state.status : 'なし';
 
