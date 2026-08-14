@@ -1699,7 +1699,7 @@ client.once('clientReady', async () => {
     setInterval(() => handleShardSchedule(client, loadData, saveData), 60 * 1000);
     setInterval(() => handleRadioTaisoSchedule(client, loadData, saveData), 60 * 1000);
 
-    logRadioSetup();
+    logRadioSetup(client);
 });
 
 client.on('voiceStateUpdate', (oldState, newState) => {

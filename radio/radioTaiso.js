@@ -24,7 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const { PermissionsBitField } = require('discord.js');
+const { PermissionsBitField, ChannelType, GatewayIntentBits } = require('discord.js');
 
 const { ensureUser, addPoints, addPointLog } = require('../utils/dataManager');
 
@@ -336,7 +336,7 @@ async function startMorningSession(client, data, saveData, today) {
 
     // 9:00の再生前にあらかじめ接続しておく。
     // ここで失敗しても記録は続けたいので、結果はログに出すだけにする。
-    const connection = await ensureReadyConnection(voice, voiceChannel);
+    const connection = await ensureReadyConnection(voice, voiceChannel, client);
 
     if (!connection.ok) {
         console.error('[radioTaiso] VCへの参加に失敗しました:', connection.reason);
@@ -357,7 +357,7 @@ async function playRadioTaiso(client, data, saveData) {
     saveData(data);
 
     const voiceChannel = await fetchVoiceChannel(client);
-    const result = await playAudioInChannel(voiceChannel);
+    const result = await playAudioInChannel(voiceChannel, client);
 
     if (!result.ok) {
         console.error('[radioTaiso] 音声の再生に失敗しました:', result.reason);
@@ -385,6 +385,18 @@ async function playRadioTaiso(client, data, saveData) {
  * @returns {string|null} 問題があればその説明、無ければ null
  */
 function checkVoicePermissions(voiceChannel) {
+    // テキストチャンネル等のIDを指定していると、joinVoiceChannel はエラーを出さず
+    // signalling のまま固まる（Discordが要求を黙って無視するため）。
+    if (
+        voiceChannel.type !== ChannelType.GuildVoice &&
+        voiceChannel.type !== ChannelType.GuildStageVoice
+    ) {
+        return (
+            `対象チャンネル(${RADIO_VC_ID})がボイスチャンネルではありません` +
+            `（種別: ${voiceChannel.type}、名前: ${voiceChannel.name}）。IDを確認してください。`
+        );
+    }
+
     const me = voiceChannel.guild.members.me;
 
     if (!me) return 'Botのメンバー情報を取得できませんでした。';
@@ -415,6 +427,51 @@ function checkVoicePermissions(voiceChannel) {
 }
 
 /**
+ * 接続前に、残骸になっているボイス状態を掃除する。
+ *
+ * signalling で固まる典型パターンが2つあり、どちらもこれで解ける:
+ *   1. 前回の接続が @discordjs/voice 内部のレジストリに残っている
+ *      （プロセス内変数 currentConnection がnullでも残っていることがある）
+ *   2. Discord側に「Botはまだそのチャンネルにいる」という状態が残っている。
+ *      この場合、同じチャンネルへ join しても状態が変化しないため
+ *      VOICE_SERVER_UPDATE が返らず、永久に signalling のままになる。
+ *      一度 channel_id: null を送って抜けてから入り直す必要がある。
+ */
+async function clearStaleVoiceState(voice, guild) {
+    disconnectVoice();
+
+    // 1. ライブラリ側に残っている接続を破棄する
+    const existing = voice.getVoiceConnection(guild.id);
+
+    if (existing) {
+        console.log('[radioTaiso] 既存のボイス接続が残っていたため破棄します');
+
+        try {
+            existing.destroy();
+        } catch {
+            // すでに破棄済みなら無視
+        }
+    }
+
+    // 2. Discord側に残っているBot自身のボイス状態を解除する
+    const me = guild.members.me;
+
+    if (me && me.voice && me.voice.channelId) {
+        console.log(`[radioTaiso] 古いボイス状態(${me.voice.channelId})を解除します`);
+
+        try {
+            await me.voice.disconnect();
+        } catch (err) {
+            // 権限不足などで失敗しても、続けて join を試す価値はある
+            console.warn('[radioTaiso] ボイス状態の解除に失敗:', err.message);
+        }
+
+        // 解除がDiscord側に反映されるまで少し待つ
+        await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+}
+
+/**
  * Ready状態のボイス接続を用意する。
  *
  * 前回の失敗で壊れた接続が currentConnection に残っていると、
@@ -425,15 +482,21 @@ function checkVoicePermissions(voiceChannel) {
  * signalling で止まる → ゲートウェイ/権限側の問題、
  * connecting で止まる → UDP がブロックされている可能性が高い、と切り分けできる。
  */
-async function ensureReadyConnection(voice, voiceChannel) {
-    const reusable =
+async function ensureReadyConnection(voice, voiceChannel, client = null) {
+    if (
         currentConnection &&
-        currentConnection.state.status !== voice.VoiceConnectionStatus.Destroyed &&
-        currentConnection.state.status !== voice.VoiceConnectionStatus.Disconnected &&
-        currentConnection.joinConfig.channelId === voiceChannel.id;
+        currentConnection.state.status === voice.VoiceConnectionStatus.Ready &&
+        currentConnection.joinConfig.channelId === voiceChannel.id
+    ) {
+        return { ok: true };
+    }
 
-    if (!reusable) {
-        disconnectVoice();
+    // 1回目が signalling で固まるのは古いボイス状態が原因のことが多く、
+    // その失敗自体が状態を解除してくれるため、掃除してもう一度試す価値がある。
+    let lastStatus = 'なし';
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+        await clearStaleVoiceState(voice, voiceChannel.guild);
 
         currentConnection = voice.joinVoiceChannel({
             channelId: voiceChannel.id,
@@ -450,44 +513,58 @@ async function ensureReadyConnection(voice, voiceChannel) {
         currentConnection.on('error', err => {
             console.error('[radioTaiso] voice connection error:', err);
         });
-    }
 
-    try {
-        await voice.entersState(
-            currentConnection,
-            voice.VoiceConnectionStatus.Ready,
-            VOICE_READY_TIMEOUT_MS
-        );
+        try {
+            await voice.entersState(
+                currentConnection,
+                voice.VoiceConnectionStatus.Ready,
+                VOICE_READY_TIMEOUT_MS
+            );
 
-        return { ok: true };
-    } catch {
-        const lastStatus = currentConnection ? currentConnection.state.status : 'なし';
+            return { ok: true };
+        } catch {
+            lastStatus = currentConnection ? currentConnection.state.status : 'なし';
 
-        disconnectVoice();
+            console.error(
+                `[radioTaiso] 接続試行 ${attempt}/2 失敗（最終状態: ${lastStatus}）`
+            );
 
-        let hint = '';
-
-        if (lastStatus === 'signalling') {
-            hint =
-                ' Discordからボイスサーバー情報が返ってきていません。' +
-                'Botの権限、またはGatewayIntentBits.GuildVoiceStatesを確認してください。';
-        } else if (lastStatus === 'connecting') {
-            hint =
-                ' Discordのボイスサーバーへ UDP で到達できていません。' +
-                'ファイアウォール（Oracle Cloudのセキュリティリスト/iptables）で' +
-                '外向きUDPが塞がれていないか確認してください。';
+            disconnectVoice();
         }
-
-        return {
-            ok: false,
-            reason:
-                `${VOICE_READY_TIMEOUT_MS / 1000}秒以内にボイス接続がReadyになりませんでした` +
-                `（最終状態: ${lastStatus}）。${hint}`
-        };
     }
+
+    let hint = '';
+
+    if (lastStatus === 'signalling') {
+        const intentOk =
+            !client ||
+            (client.options &&
+                client.options.intents &&
+                client.options.intents.has(GatewayIntentBits.GuildVoiceStates));
+
+        hint =
+            ' Discordからボイスサーバー情報(VOICE_SERVER_UPDATE)が返ってきていません。' +
+            (intentOk
+                ? 'Botをサーバーから一度キックして再招待するか、' +
+                  'Discord側のボイス状態が壊れていないか確認してください。' +
+                  '対象VCにBotが幽霊のように残って見える場合はそれが原因です。'
+                : '★GatewayIntentBits.GuildVoiceStates が有効になっていません。これが原因です。');
+    } else if (lastStatus === 'connecting') {
+        hint =
+            ' Discordのボイスサーバーへ UDP で到達できていません。' +
+            'ファイアウォール（Oracle Cloudのセキュリティリスト/iptables）で' +
+            '外向きUDPが塞がれていないか確認してください。';
+    }
+
+    return {
+        ok: false,
+        reason:
+            `2回試しましたが、${VOICE_READY_TIMEOUT_MS / 1000}秒以内にボイス接続がReadyになりませんでした` +
+            `（最終状態: ${lastStatus}）。${hint}`
+    };
 }
 
-async function playAudioInChannel(voiceChannel) {
+async function playAudioInChannel(voiceChannel, client = null) {
     if (!voiceChannel) {
         return { ok: false, reason: 'ボイスチャンネルを取得できませんでした。' };
     }
@@ -507,7 +584,7 @@ async function playAudioInChannel(voiceChannel) {
     let player = null;
 
     try {
-        const connection = await ensureReadyConnection(voice, voiceChannel);
+        const connection = await ensureReadyConnection(voice, voiceChannel, client);
         if (!connection.ok) return { ok: false, reason: connection.reason };
 
         player = voice.createAudioPlayer({
@@ -859,7 +936,7 @@ async function testRadioAudio(client, data) {
     }
 
     const voiceChannel = await fetchVoiceChannel(client);
-    const result = await playAudioInChannel(voiceChannel);
+    const result = await playAudioInChannel(voiceChannel, client);
 
     disconnectVoice();
 
@@ -874,13 +951,24 @@ async function testRadioAudio(client, data) {
 /**
  * 起動時に前提条件を確認してログに出す（問題があっても起動は止めない）
  */
-function logRadioSetup() {
+function logRadioSetup(client = null) {
     const setup = describeAudioSetup();
 
     if (setup.ok) {
         console.log(`[radioTaiso] 再生準備OK / ${setup.reason}`);
     } else {
         console.warn(`[radioTaiso] 再生できない状態です: ${setup.reason}`);
+    }
+
+    if (client && client.options && client.options.intents) {
+        const hasIntent = client.options.intents.has(GatewayIntentBits.GuildVoiceStates);
+
+        if (!hasIntent) {
+            console.error(
+                '[radioTaiso] GatewayIntentBits.GuildVoiceStates が有効になっていません。' +
+                'ボイス接続は必ず失敗します。'
+            );
+        }
     }
 }
 
