@@ -273,15 +273,29 @@ async function fetchVoiceChannel(client) {
  * @returns {boolean} 新しく追加された人がいたか
  */
 function collectCurrentMembers(voiceChannel, session) {
-    if (!voiceChannel || !voiceChannel.members) return false;
+    if (!voiceChannel || !voiceChannel.guild) return false;
+
+    // voiceChannel.members はメンバーキャッシュに載っている人しか返さない。
+    // このBotは全メンバーfetchが失敗することがあり取りこぼすため、
+    // ボイス状態のキャッシュから直接在室者を引く。
+    const voiceStates = voiceChannel.guild.voiceStates.cache;
+    const selfId = voiceChannel.client && voiceChannel.client.user
+        ? voiceChannel.client.user.id
+        : null;
 
     let added = false;
 
-    for (const member of voiceChannel.members.values()) {
-        if (member.user.bot) continue;
-        if (session.participants.includes(member.id)) continue;
+    for (const voiceState of voiceStates.values()) {
+        if (voiceState.channelId !== voiceChannel.id) continue;
 
-        session.participants.push(member.id);
+        const userId = voiceState.id;
+
+        if (userId === selfId) continue;
+        // メンバー情報が取れない場合は、Botかどうか判断できないので人として扱う
+        if (voiceState.member && voiceState.member.user.bot) continue;
+        if (session.participants.includes(userId)) continue;
+
+        session.participants.push(userId);
         added = true;
     }
 
@@ -322,25 +336,16 @@ async function startMorningSession(client, data, saveData, today) {
 
     saveData(data);
 
-    if (!voiceChannel) return;
+    console.log(
+        `[radioTaiso] ${today} の参加ログ収集を開始しました` +
+        `（開始時点の在室: ${radio.session.participants.length}人）`
+    );
 
-    const voice = loadVoiceLibs();
-    if (!voice) return;
-
-    const permissionError = checkVoicePermissions(voiceChannel);
-
-    if (permissionError) {
-        console.error('[radioTaiso] VCへの参加をスキップしました:', permissionError);
-        return;
-    }
-
-    // 9:00の再生前にあらかじめ接続しておく。
-    // ここで失敗しても記録は続けたいので、結果はログに出すだけにする。
-    const connection = await ensureReadyConnection(voice, voiceChannel, client);
-
-    if (!connection.ok) {
-        console.error('[radioTaiso] VCへの参加に失敗しました:', connection.reason);
-    }
+    // 8:50〜9:00 はVCに接続しない。
+    // 参加ログの収集は voiceStateUpdate とVCの在室者ポーリングで行うため、
+    // Bot自身がVCに入っている必要がない。
+    // ここで接続すると、失敗時に再接続を繰り返してBotが出入りして見えるため、
+    // 接続は再生直前（9:00）にまとめて行う。
 }
 
 /**
