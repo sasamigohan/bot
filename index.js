@@ -12,6 +12,7 @@ const {
     ButtonBuilder,
     ButtonStyle,
     EmbedBuilder,
+    AttachmentBuilder,
     MessageFlags
 } = require('discord.js');
 
@@ -23,6 +24,7 @@ const {
     addPoints,
     addPointLog
 } = require('./utils/dataManager');
+const { createColorPreviewImage, normalizeHex } = require('./utils/colorImage');
 const omikujiData = require('./config/omikuji');
 const checkLevelUp = require('./utils/levelManager');
 const shop = require('./config/shop');
@@ -2257,6 +2259,69 @@ client.on('interactionCreate', async interaction => {
         }
 
         // おみくじ：ラッキーカラー変更
+        // おみくじ：ラッキーカラーを画像で確認（消えないメッセージとして投稿する）
+        if (interaction.customId.startsWith('omikuji_checkcolor_')) {
+            const {
+                ownerId,
+                primaryHex,
+                secondaryHex,
+                colorMode
+            } = parseOmikujiColorCustomId(interaction.customId);
+
+            if (interaction.user.id !== ownerId) {
+                return interaction.reply({
+                    content: 'これはあなたのおみくじではありません。',
+                    ephemeral: true
+                });
+            }
+
+            const isGradient = colorMode === 'gradient' && Boolean(secondaryHex);
+
+            const image = createColorPreviewImage(
+                primaryHex,
+                isGradient ? secondaryHex : null
+            );
+
+            if (!image) {
+                return interaction.reply({
+                    content: 'カラーコードを解釈できなかったため、画像を生成できませんでした。',
+                    ephemeral: true
+                });
+            }
+
+            const fileName = `luckycolor_${ownerId}_${Date.now()}.png`;
+
+            const attachment = new AttachmentBuilder(image.buffer, {
+                name: fileName,
+                description: isGradient
+                    ? `${normalizeHex(primaryHex)} から ${normalizeHex(secondaryHex)} へのグラデーション`
+                    : `${normalizeHex(primaryHex)} の単色`
+            });
+
+            const description = isGradient
+                ? `**開始色**：${normalizeHex(primaryHex)}\n` +
+                  `**終了色**：${normalizeHex(secondaryHex)}\n\n` +
+                  '上段がグラデーション、下段が左に開始色・右に終了色です。'
+                : `**カラー**：${normalizeHex(primaryHex)}`;
+
+            const embed = createEmbed(
+                '🎨 ラッキーカラー確認',
+                description,
+                {
+                    color: normalizeHex(primaryHex),
+                    image: `attachment://${fileName}`
+                }
+            ).setAuthor({
+                name: `${getInteractionDisplayName(interaction)} のラッキーカラー`,
+                iconURL: interaction.user.displayAvatarURL({ size: 128 })
+            });
+
+            return interaction.reply({
+                embeds: [embed],
+                files: [attachment]
+            });
+        }
+
         if (interaction.customId.startsWith('omikuji_color_')) {
             const {
                 ownerId,
@@ -2571,7 +2636,8 @@ client.on('interactionCreate', async interaction => {
                 label: '🔮 おみくじ・通知',
                 lines: [
                     '`/omikuji mode:<通常カラー/グラデーション>` — 1日1回おみくじを引きます。' +
-                        '結果に応じてラッキーカラーのロールカラーが変わることがあります。',
+                        '結果に応じてラッキーカラーのロールカラーが変わることがあります。' +
+                        '「ラッキーカラーを確認」ボタンで、実際の色味を画像で確認できます（グラデーションは混ざり具合と両端の色を表示）。',
                     '`/d-notify mode:<on/off>` — デイリーおみくじをまだ引いていない時のリマインド通知を' +
                         '受け取るかどうかを設定します。'
                 ]
@@ -2999,24 +3065,29 @@ if (
         saveData(data);
 
         const result = {
-            "運勢運": pickRandom(omikujiData["運勢"]),
+            "本日の運勢": pickRandom(omikujiData["運勢"]),
             "ガチャ運": pickRandom(omikujiData["ガチャ"]),
-            "エリア運": pickRandom(omikujiData["エリア"]),
-            "精霊運": pickRandom(omikujiData["精霊"]),
-            "絵文字運": pickRandom(omikujiData["絵文字"]),
-            "店員運": pickRandom(omikujiData["店員"]),
+            "本日のラッキーエリア": pickRandom(omikujiData["エリア"]),
+            "本日の精霊": pickRandom(omikujiData["精霊"]),
+            "本日の絵文字": pickRandom(omikujiData["絵文字"]),
+            "本日の店員": pickRandom(omikujiData["店員"]),
+            "本日のアイス": pickRandom(omikujiData["アイス"]),
+            "本日のケモ": pickRandom(omikujiData["ケモ"]),
+            "本日のギャンブル": pickRandom(omikujiData["ギャンブル"]),
+            "本日のポケモン": pickRandom(omikujiData["ポケモン"]),
             "爆発運": pickRandom(omikujiData["爆発"]),
             "遭遇運": pickRandom(omikujiData["遭遇"]),
             "味方運": pickRandom(omikujiData["味方"]),
             "誤字運": pickRandom(omikujiData["誤字"]),
-            "ラッキーカラー運": colorText,
-            "ポイント運": `${points}pt 獲得`
+            "ラッキーカラー": colorText,
+            "獲得ポイント": `${points}pt`
         };
 
         const components = [];
+        const colorButtons = [];
 
         if (canChangeColor) {
-            const row = new ActionRowBuilder().addComponents(
+            colorButtons.push(
                 new ButtonBuilder()
                     .setCustomId(
                         colorMode === 'gradient' && luckyColor2
@@ -3035,9 +3106,21 @@ if (
                     .setLabel('今の色をお気に入り登録して変更')
                     .setStyle(ButtonStyle.Success)
             );
-
-            components.push(row);
         }
+
+        // 確認だけならカラーロールが無くても使えるので、canChangeColorに関わらず出す
+        colorButtons.push(
+            new ButtonBuilder()
+                .setCustomId(
+                    colorMode === 'gradient' && luckyColor2
+                        ? `omikuji_checkcolor_${userId}_${luckyColor.hex.replace('#', '')}_${luckyColor2.hex.replace('#', '')}_${today}_gradient`
+                        : `omikuji_checkcolor_${userId}_${luckyColor.hex.replace('#', '')}_${today}_single`
+                )
+                .setLabel('ラッキーカラーを確認')
+                .setStyle(ButtonStyle.Secondary)
+        );
+
+        components.push(new ActionRowBuilder().addComponents(...colorButtons));
 
         const omikujiDescription =
             Object.entries(result)
