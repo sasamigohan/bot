@@ -472,6 +472,76 @@ async function clearStaleVoiceState(voice, guild) {
 }
 
 /**
+ * 接続試行中にゲートウェイへ届くボイス関連パケットを直接観測する。
+ *
+ * signalling で固まる原因を確定させるための診断。
+ * joinVoiceChannel は「ゲートウェイへ接続要求を送り、
+ * VOICE_STATE_UPDATE と VOICE_SERVER_UPDATE の両方が返ってきたら次へ進む」
+ * という動作なので、どちらが欠けているかで原因が切り分けられる。
+ */
+function watchVoiceGateway(client, guildId) {
+    const seen = { stateUpdate: false, serverUpdate: false, endpoint: null };
+
+    if (!client || !client.user) return { seen, stop: () => {} };
+
+    const onRaw = packet => {
+        if (!packet || !packet.t || !packet.d) return;
+
+        if (
+            packet.t === 'VOICE_STATE_UPDATE' &&
+            packet.d.guild_id === guildId &&
+            packet.d.user_id === client.user.id
+        ) {
+            seen.stateUpdate = true;
+            console.log(
+                `[radioTaiso] gateway: 自分のVOICE_STATE_UPDATE受信 channel_id=${packet.d.channel_id}`
+            );
+        }
+
+        if (packet.t === 'VOICE_SERVER_UPDATE' && packet.d.guild_id === guildId) {
+            seen.serverUpdate = true;
+            seen.endpoint = packet.d.endpoint;
+            console.log(`[radioTaiso] gateway: VOICE_SERVER_UPDATE受信 endpoint=${packet.d.endpoint}`);
+        }
+    };
+
+    client.on('raw', onRaw);
+
+    return { seen, stop: () => client.off('raw', onRaw) };
+}
+
+/**
+ * 観測結果から原因を言葉にする
+ */
+function describeGatewayFindings(seen) {
+    if (!seen.stateUpdate && !seen.serverUpdate) {
+        return (
+            '\n【診断】接続要求に対しDiscordから何も返ってきていません' +
+            '（VOICE_STATE_UPDATE / VOICE_SERVER_UPDATE ともに未受信）。' +
+            'ゲートウェイへ要求自体が届いていない可能性が高く、' +
+            '同じトークンで別のプロセス（別サーバー・ローカル・旧デプロイ環境）が' +
+            '接続していないか確認してください。'
+        );
+    }
+
+    if (seen.stateUpdate && !seen.serverUpdate) {
+        return (
+            '\n【診断】VC参加自体は受理されましたが（VOICE_STATE_UPDATE受信）、' +
+            'ボイスサーバー情報(VOICE_SERVER_UPDATE)だけが返ってきていません。' +
+            'サーバー設定の「サーバーリージョン/音声リージョン」を別のリージョンに変更して' +
+            '再試行すると解消することがあります。'
+        );
+    }
+
+    return (
+        '\n【診断】必要なパケットは両方とも受信できています' +
+        `（endpoint=${seen.endpoint}）。` +
+        'にもかかわらずReadyにならないため、@discordjs/voice への受け渡しで' +
+        '問題が起きています。npm install のやり直しをお試しください。'
+    );
+}
+
+/**
  * Ready状態のボイス接続を用意する。
  *
  * 前回の失敗で壊れた接続が currentConnection に残っていると、
@@ -495,42 +565,50 @@ async function ensureReadyConnection(voice, voiceChannel, client = null) {
     // その失敗自体が状態を解除してくれるため、掃除してもう一度試す価値がある。
     let lastStatus = 'なし';
 
-    for (let attempt = 1; attempt <= 2; attempt++) {
-        await clearStaleVoiceState(voice, voiceChannel.guild);
+    const watcher = watchVoiceGateway(client, voiceChannel.guild.id);
 
-        currentConnection = voice.joinVoiceChannel({
-            channelId: voiceChannel.id,
-            guildId: voiceChannel.guild.id,
-            adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-            selfDeaf: false,
-            selfMute: false
-        });
+    try {
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            await clearStaleVoiceState(voice, voiceChannel.guild);
 
-        currentConnection.on('stateChange', (oldState, newState) => {
-            console.log(`[radioTaiso] voice connection: ${oldState.status} -> ${newState.status}`);
-        });
+            currentConnection = voice.joinVoiceChannel({
+                channelId: voiceChannel.id,
+                guildId: voiceChannel.guild.id,
+                adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+                selfDeaf: false,
+                selfMute: false
+            });
 
-        currentConnection.on('error', err => {
-            console.error('[radioTaiso] voice connection error:', err);
-        });
+            currentConnection.on('stateChange', (oldState, newState) => {
+                console.log(
+                    `[radioTaiso] voice connection: ${oldState.status} -> ${newState.status}`
+                );
+            });
 
-        try {
-            await voice.entersState(
-                currentConnection,
-                voice.VoiceConnectionStatus.Ready,
-                VOICE_READY_TIMEOUT_MS
-            );
+            currentConnection.on('error', err => {
+                console.error('[radioTaiso] voice connection error:', err);
+            });
 
-            return { ok: true };
-        } catch {
-            lastStatus = currentConnection ? currentConnection.state.status : 'なし';
+            try {
+                await voice.entersState(
+                    currentConnection,
+                    voice.VoiceConnectionStatus.Ready,
+                    VOICE_READY_TIMEOUT_MS
+                );
 
-            console.error(
-                `[radioTaiso] 接続試行 ${attempt}/2 失敗（最終状態: ${lastStatus}）`
-            );
+                return { ok: true };
+            } catch {
+                lastStatus = currentConnection ? currentConnection.state.status : 'なし';
 
-            disconnectVoice();
+                console.error(
+                    `[radioTaiso] 接続試行 ${attempt}/2 失敗（最終状態: ${lastStatus}）`
+                );
+
+                disconnectVoice();
+            }
         }
+    } finally {
+        watcher.stop();
     }
 
     let hint = '';
@@ -542,16 +620,12 @@ async function ensureReadyConnection(voice, voiceChannel, client = null) {
                 client.options.intents &&
                 client.options.intents.has(GatewayIntentBits.GuildVoiceStates));
 
-        hint =
-            ' Discordからボイスサーバー情報(VOICE_SERVER_UPDATE)が返ってきていません。' +
-            (intentOk
-                ? 'Botをサーバーから一度キックして再招待するか、' +
-                  'Discord側のボイス状態が壊れていないか確認してください。' +
-                  '対象VCにBotが幽霊のように残って見える場合はそれが原因です。'
-                : '★GatewayIntentBits.GuildVoiceStates が有効になっていません。これが原因です。');
+        hint = intentOk
+            ? describeGatewayFindings(watcher.seen)
+            : '\n【診断】GatewayIntentBits.GuildVoiceStates が有効になっていません。これが原因です。';
     } else if (lastStatus === 'connecting') {
         hint =
-            ' Discordのボイスサーバーへ UDP で到達できていません。' +
+            '\n【診断】Discordのボイスサーバーへ UDP で到達できていません。' +
             'ファイアウォール（Oracle Cloudのセキュリティリスト/iptables）で' +
             '外向きUDPが塞がれていないか確認してください。';
     }
