@@ -427,6 +427,95 @@ function checkVoicePermissions(voiceChannel) {
 }
 
 /**
+ * 高番号ポートの外向きUDPが通るかを実測する。
+ *
+ * Discordのボイスは 50000番台などの高番号UDPを使う。
+ * ここが塞がれていると、音声WebSocketは張れても
+ * IPディスカバリ(UDP)が完了せず connecting → signalling を延々と往復する。
+ *
+ * GoogleのSTUNサーバー(UDP 19302)にBinding Requestを投げ、
+ * 応答が返るかどうかで高番号UDPの疎通を判定する。
+ */
+function checkUdpEgress(timeoutMs = 5000) {
+    return new Promise(resolve => {
+        const dgram = require('dgram');
+        const socket = dgram.createSocket('udp4');
+
+        // STUN Binding Request: type(0x0001) + length(0) + magic cookie + transaction id
+        const request = Buffer.alloc(20);
+        request.writeUInt16BE(0x0001, 0);
+        request.writeUInt16BE(0x0000, 2);
+        request.writeUInt32BE(0x2112a442, 4);
+        require('crypto').randomFillSync(request, 8, 12);
+
+        let settled = false;
+
+        const finish = result => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+
+            try {
+                socket.close();
+            } catch {
+                // すでに閉じていれば無視
+            }
+
+            resolve(result);
+        };
+
+        const timer = setTimeout(
+            () => finish({ ok: false, reason: `UDP応答なし（${timeoutMs}ms待機）` }),
+            timeoutMs
+        );
+
+        socket.on('message', msg => {
+            // 0x0101 = Binding Success Response
+            if (msg.length >= 2 && msg.readUInt16BE(0) === 0x0101) {
+                finish({ ok: true, reason: 'UDP疎通OK' });
+            }
+        });
+
+        socket.on('error', err => finish({ ok: false, reason: `UDPエラー: ${err.message}` }));
+
+        socket.send(request, 19302, 'stun.l.google.com', err => {
+            if (err) finish({ ok: false, reason: `UDP送信失敗: ${err.message}` });
+        });
+    });
+}
+
+/**
+ * 暗号化ライブラリを事前に読み込んでおく。
+ *
+ * @discordjs/voice は libsodium-wrappers を非同期(WASM)で読み込み、
+ * 完了するまで暗号化メソッドが「未インストール」扱いの例外を投げる。
+ * 接続処理に入る前に読み込みを完了させておく。
+ */
+async function ensureEncryptionReady() {
+    try {
+        const sodium = require('libsodium-wrappers');
+        if (sodium && sodium.ready) await sodium.ready;
+        return true;
+    } catch (err) {
+        console.error('[radioTaiso] libsodium-wrappers を読み込めません:', err.message);
+        return false;
+    }
+}
+
+/**
+ * @discordjs/voice の依存状況レポート。
+ * どの暗号化パッケージ・opusエンコーダ・ffmpegが認識されているかが分かる。
+ */
+function getDependencyReport() {
+    try {
+        const voice = require('@discordjs/voice');
+        return voice.generateDependencyReport();
+    } catch (err) {
+        return `依存レポートを取得できません: ${err.message}`;
+    }
+}
+
+/**
  * signalling から進まなくなった接続を救済する。
  *
  * @discordjs/voice は configureNetworking() を VOICE_SERVER_UPDATE の
@@ -439,7 +528,7 @@ function checkVoicePermissions(voiceChannel) {
  *   - server だけ来ている           → rejoin() で state を再送させる
  * ことで復帰させる。
  */
-function startSignallingRecovery(voice) {
+function startSignallingRecovery(voice, log) {
     return setInterval(() => {
         if (!currentConnection) return;
         if (currentConnection.state.status !== voice.VoiceConnectionStatus.Signalling) return;
@@ -452,7 +541,25 @@ function startSignallingRecovery(voice) {
                     '[radioTaiso] パケットは揃っているのに接続が進んでいないため、' +
                     'configureNetworking() を手動実行します'
                 );
+
+                log.attempted++;
                 currentConnection.configureNetworking();
+
+                // 呼んでも状態が変わらない場合、早期returnの条件に該当している
+                if (
+                    currentConnection.state.status === voice.VoiceConnectionStatus.Signalling
+                ) {
+                    const server = packets.server || {};
+                    log.noEffect++;
+                    log.endpointMissing = !server.endpoint;
+
+                    console.error(
+                        '[radioTaiso] configureNetworking() を呼んでも状態が変わりません。' +
+                        `endpoint=${server.endpoint} token=${server.token ? 'あり' : 'なし'} ` +
+                        `session_id=${packets.state && packets.state.session_id ? 'あり' : 'なし'}`
+                    );
+                }
+
                 return;
             }
 
@@ -460,10 +567,12 @@ function startSignallingRecovery(voice) {
                 console.warn(
                     '[radioTaiso] VOICE_STATE_UPDATE が接続に届いていないため rejoin します'
                 );
+                log.rejoined++;
                 currentConnection.rejoin();
             }
         } catch (err) {
-            console.error('[radioTaiso] signalling 復旧処理でエラー:', err.message);
+            log.error = err.message;
+            console.error('[radioTaiso] signalling 復旧処理でエラー:', err);
         }
     }, 5000);
 }
@@ -659,7 +768,7 @@ function watchVoiceGateway(client, guildId) {
 /**
  * 観測結果から原因を言葉にする
  */
-function describeGatewayFindings(seen, adapterLog = null) {
+function describeGatewayFindings(seen, adapterLog = null, udpCheck = null) {
     if (!seen.stateUpdate && !seen.serverUpdate) {
         return (
             '\n【診断】接続要求に対しDiscordから何も返ってきていません' +
@@ -707,11 +816,24 @@ function describeGatewayFindings(seen, adapterLog = null) {
         const { state, server } = adapterLog.packets;
 
         if (state && server) {
+            // ここまで来ている場合、接続は connecting まで進んだうえで
+            // 音声サーバーとの通信に失敗し、signalling に差し戻されている。
+            // 原因のほとんどは高番号UDPが外に出られないこと。
+            if (udpCheck && !udpCheck.ok) {
+                return (
+                    '\n【診断】★外向きUDPが通っていません' +
+                    `（STUNテスト結果: ${udpCheck.reason}）。` +
+                    'Discordのボイスは高番号ポートのUDPを使うため、これが原因です。' +
+                    'Oracle Cloudのセキュリティリスト（イングレス/エグレス）と' +
+                    'ホストのiptablesで、外向きUDPと戻りの通信が許可されているか確認してください。'
+                );
+            }
+
             return (
-                '\n【診断】VoiceConnection は必要なパケットを両方保持しているのに' +
-                '接続処理へ進んでいません（configureNetworking が動いていない）。' +
-                '@discordjs/voice の内部で処理が止まっています。' +
-                'バージョンを変えて npm install @discordjs/voice@0.17.0 を試してください。'
+                '\n【診断】音声サーバーへの接続まで進みましたが、通信が確立せず' +
+                '再接続を繰り返しています（connecting ⇄ signalling）。' +
+                (udpCheck && udpCheck.ok ? 'UDP疎通自体は確認できているため、' : '') +
+                'ログの [voice-debug] 行に出ている切断コードを確認してください。'
             );
         }
     }
@@ -763,22 +885,45 @@ async function ensureReadyConnection(voice, voiceChannel, client = null) {
     // その失敗自体が状態を解除してくれるため、掃除してもう一度試す価値がある。
     let lastStatus = 'なし';
     let lastAdapterLog = null;
+    let udpCheck = null;
 
     const watcher = watchVoiceGateway(client, voiceChannel.guild.id);
 
     try {
         for (let attempt = 1; attempt <= 2; attempt++) {
+            await ensureEncryptionReady();
             await ensureSelfMemberCached(voiceChannel.guild, client);
+
+            if (attempt === 1) {
+                udpCheck = await checkUdpEgress();
+                console.log(`[radioTaiso] UDP疎通チェック: ${udpCheck.reason}`);
+            }
+
             await clearStaleVoiceState(voice, voiceChannel.guild);
 
-            const adapterLog = { state: 0, server: 0, sent: 0, sendFailed: 0 };
+            const adapterLog = {
+                state: 0,
+                server: 0,
+                sent: 0,
+                sendFailed: 0,
+                attempted: 0,
+                noEffect: 0,
+                rejoined: 0,
+                error: null
+            };
 
             currentConnection = voice.joinVoiceChannel({
                 channelId: voiceChannel.id,
                 guildId: voiceChannel.guild.id,
                 adapterCreator: createInstrumentedAdapter(voiceChannel.guild, adapterLog),
                 selfDeaf: false,
-                selfMute: false
+                selfMute: false,
+                // 音声WebSocket/UDPの詳細（切断コードを含む）をログに出す
+                debug: true
+            });
+
+            currentConnection.on('debug', message => {
+                console.log('[radioTaiso][voice-debug]', message);
             });
 
             lastAdapterLog = adapterLog;
@@ -793,7 +938,7 @@ async function ensureReadyConnection(voice, voiceChannel, client = null) {
                 console.error('[radioTaiso] voice connection error:', err);
             });
 
-            const recovery = startSignallingRecovery(voice);
+            const recovery = startSignallingRecovery(voice, adapterLog);
 
             try {
                 await voice.entersState(
@@ -845,7 +990,7 @@ async function ensureReadyConnection(voice, voiceChannel, client = null) {
                 client.options.intents.has(GatewayIntentBits.GuildVoiceStates));
 
         hint = intentOk
-            ? describeGatewayFindings(watcher.seen, lastAdapterLog)
+            ? describeGatewayFindings(watcher.seen, lastAdapterLog, udpCheck)
             : '\n【診断】GatewayIntentBits.GuildVoiceStates が有効になっていません。これが原因です。';
     } else if (lastStatus === 'connecting') {
         hint =
