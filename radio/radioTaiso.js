@@ -92,23 +92,123 @@ function ensureRadioData(data) {
 function loadVoiceLibs() {
     try {
         const voice = require('@discordjs/voice');
-
-        // mp3等をそのまま流す場合は ffmpeg が必要。
-        // ffmpeg-static があればそのパスを prism-media に教える。
-        if (!process.env.FFMPEG_PATH) {
-            try {
-                const ffmpegPath = require('ffmpeg-static');
-                if (ffmpegPath) process.env.FFMPEG_PATH = ffmpegPath;
-            } catch {
-                // ffmpeg-static が無くても、システムのffmpegやOgg音源なら動く
-            }
-        }
-
+        prepareFfmpeg();
         return voice;
     } catch (err) {
-        console.error('[radioTaiso] @discordjs/voice を読み込めませんでした:', err.message);
+        console.error('[radioTaiso] @discordjs/voice を読み込めませんでした:', err);
         return null;
     }
+}
+
+/**
+ * 実在する ffmpeg のパスを返す。見つからなければ null。
+ * ffmpeg-static は optionalDependencies なので、
+ * requireできてもバイナリのダウンロードに失敗している場合がある。
+ * そのため必ず存在確認する。
+ */
+function resolveFfmpegPath() {
+    const candidates = [];
+
+    if (process.env.FFMPEG_PATH) candidates.push(process.env.FFMPEG_PATH);
+
+    try {
+        const ffmpegStatic = require('ffmpeg-static');
+        const staticPath = ffmpegStatic && (ffmpegStatic.path || ffmpegStatic);
+        if (typeof staticPath === 'string') candidates.push(staticPath);
+    } catch {
+        // ffmpeg-static が無くても、PATH上のffmpegやOgg音源なら動く
+    }
+
+    for (const candidate of candidates) {
+        if (candidate && fs.existsSync(candidate)) return candidate;
+    }
+
+    return null;
+}
+
+/**
+ * prism-media 1.3.x の ffmpeg 探索は
+ * [ffmpeg-static, 'ffmpeg', 'avconv', './ffmpeg', './avconv'] の固定順で、
+ * FFMPEG_PATH 環境変数を見てくれない。
+ * そこで FFMPEG_PATH のディレクトリを PATH の先頭に通し、
+ * 'ffmpeg' としてspawnされたときに解決できるようにする。
+ */
+function prepareFfmpeg() {
+    const ffmpegPath = resolveFfmpegPath();
+    if (!ffmpegPath) return;
+
+    const dir = path.dirname(ffmpegPath);
+    const sep = process.platform === 'win32' ? ';' : ':';
+    const current = process.env.PATH || '';
+
+    if (!current.split(sep).includes(dir)) {
+        process.env.PATH = `${dir}${sep}${current}`;
+    }
+}
+
+/**
+ * ffmpeg（PATH上のものを含む）が実際に起動できるか確認する
+ */
+function isFfmpegAvailable() {
+    prepareFfmpeg();
+
+    const { spawnSync } = require('child_process');
+
+    for (const command of ['ffmpeg', 'avconv']) {
+        try {
+            const result = spawnSync(command, ['-h'], { windowsHide: true });
+            if (!result.error) return true;
+        } catch {
+            // 次の候補へ
+        }
+    }
+
+    return false;
+}
+
+/**
+ * 再生の前提条件が揃っているか調べる。
+ * 起動時ログや /radio-test での事前確認に使う。
+ * @returns {{ok: boolean, reason: string, audioPath: string|null}}
+ */
+function describeAudioSetup() {
+    const audioPath = resolveAudioPath();
+
+    if (!audioPath) {
+        return {
+            ok: false,
+            audioPath: null,
+            reason:
+                '音源ファイルが見つかりません。' +
+                `${AUDIO_DIR} に ${AUDIO_BASENAME}.ogg 等を置くか、環境変数 RADIO_TAISO_AUDIO で指定してください。`
+        };
+    }
+
+    try {
+        require('@discordjs/voice');
+    } catch {
+        return {
+            ok: false,
+            audioPath,
+            reason: '@discordjs/voice が未インストールです。npm install を実行してください。'
+        };
+    }
+
+    const ext = path.extname(audioPath).toLowerCase();
+    const needsFfmpeg = !['.ogg', '.opus', '.webm'].includes(ext);
+
+    if (needsFfmpeg && !isFfmpegAvailable()) {
+        return {
+            ok: false,
+            audioPath,
+            reason:
+                `${ext} の再生には ffmpeg が必要ですが、実行できる ffmpeg が見つかりません。` +
+                'ffmpeg をインストールする（Ubuntu: sudo apt install -y ffmpeg）か、' +
+                '音源を .ogg (Ogg/Opus) に変換してください。'
+        };
+    }
+
+    return { ok: true, audioPath, reason: `音源: ${audioPath}` };
 }
 
 /**
@@ -253,21 +353,41 @@ async function playRadioTaiso(client, data, saveData) {
     saveData(data);
 
     const voiceChannel = await fetchVoiceChannel(client);
-    const voice = loadVoiceLibs();
-    const audioPath = resolveAudioPath();
+    const result = await playAudioInChannel(voiceChannel);
 
-    if (!voice || !voiceChannel || !audioPath) {
-        if (!audioPath) {
-            console.error(
-                '[radioTaiso] 音源ファイルが見つかりません。' +
-                `${AUDIO_DIR} に ${AUDIO_BASENAME}.ogg 等を置くか、` +
-                'RADIO_TAISO_AUDIO で指定してください。'
-            );
-        }
-
-        await finishMorningSession(client, data, saveData, { played: false });
-        return;
+    if (!result.ok) {
+        console.error('[radioTaiso] 音声の再生に失敗しました:', result.reason);
     }
+
+    await finishMorningSession(client, data, saveData, {
+        played: result.ok,
+        reason: result.reason
+    });
+}
+
+/**
+ * 指定VCに接続して音源を最後まで再生する。
+ * 例外を投げず、必ず {ok, reason} を返す。
+ *
+ * AudioPlayer の 'error' は listener が無いと Node が例外を投げ、
+ * try/catch では捕まえられずプロセスごと落ちる。
+ * そのため play() より前に必ずハンドラを登録する。
+ */
+async function playAudioInChannel(voiceChannel) {
+    if (!voiceChannel) {
+        return { ok: false, reason: 'ボイスチャンネルを取得できませんでした。' };
+    }
+
+    const setup = describeAudioSetup();
+    if (!setup.ok) return { ok: false, reason: setup.reason };
+
+    const voice = loadVoiceLibs();
+    if (!voice) {
+        return { ok: false, reason: '@discordjs/voice を読み込めませんでした。' };
+    }
+
+    const audioPath = setup.audioPath;
+    let player = null;
 
     try {
         if (!currentConnection) {
@@ -286,30 +406,75 @@ async function playRadioTaiso(client, data, saveData) {
             20 * 1000
         );
 
-        const player = voice.createAudioPlayer();
-        const resource = voice.createAudioResource(fs.createReadStream(audioPath), {
+        player = voice.createAudioPlayer({
+            behaviors: { noSubscriber: voice.NoSubscriberBehavior.Play }
+        });
+
+        const stream = fs.createReadStream(audioPath);
+
+        // 再生完了 / 失敗を1つのPromiseにまとめる。
+        // 'error' ハンドラをplay()前に登録することが重要。
+        const finished = new Promise(resolve => {
+            let settled = false;
+
+            const done = outcome => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                resolve(outcome);
+            };
+
+            const timer = setTimeout(
+                () => done({ ok: false, reason: `再生が ${MAX_PLAY_MS / 1000}秒 で終わりませんでした。` }),
+                MAX_PLAY_MS
+            );
+
+            player.on('error', err => {
+                console.error('[radioTaiso] AudioPlayer error:', err);
+                done({ ok: false, reason: `再生エラー: ${err.message}` });
+            });
+
+            player.on(voice.AudioPlayerStatus.Idle, () => {
+                done({ ok: true, reason: '再生が完了しました。' });
+            });
+
+            stream.on('error', err => {
+                console.error('[radioTaiso] 音源の読み込みに失敗:', err);
+                done({ ok: false, reason: `音源の読み込みに失敗: ${err.message}` });
+            });
+        });
+
+        const resource = voice.createAudioResource(stream, {
             inputType: getInputType(voice, audioPath)
         });
 
         currentConnection.subscribe(player);
         player.play(resource);
 
-        await voice.entersState(player, voice.AudioPlayerStatus.Playing, 20 * 1000);
-        await voice.entersState(player, voice.AudioPlayerStatus.Idle, MAX_PLAY_MS);
+        const outcome = await finished;
 
-        player.stop();
+        player.stop(true);
 
-        await finishMorningSession(client, data, saveData, { played: true });
+        return outcome;
     } catch (err) {
-        console.error('[radioTaiso] 音声の再生に失敗しました:', err.message);
-        await finishMorningSession(client, data, saveData, { played: false });
+        console.error('[radioTaiso] 再生処理でエラー:', err);
+
+        if (player) {
+            try {
+                player.stop(true);
+            } catch {
+                // 停止できなくても後続の切断は行う
+            }
+        }
+
+        return { ok: false, reason: err.message };
     }
 }
 
 /**
  * 再生終了後: 参加者を確定してポイント付与・参加日記録・一覧投稿を行う
  */
-async function finishMorningSession(client, data, saveData, { played }) {
+async function finishMorningSession(client, data, saveData, { played, reason = '' }) {
     const radio = ensureRadioData(data);
     const session = radio.session;
 
@@ -367,6 +532,7 @@ async function finishMorningSession(client, data, saveData, { played }) {
 
     if (!played) {
         lines.push('※音声の再生に失敗したため、記録のみ行いました。');
+        if (reason) lines.push(`（原因: ${reason}）`);
     }
 
     try {
@@ -400,10 +566,16 @@ async function handleRadioTaisoSchedule(client, loadData, saveData) {
         return;
     }
 
+    // 8:50ちょうどの1回だけを狙うと、setIntervalのズレや再起動で丸ごと空振りする。
+    // 「8:50以降 9:00未満」かつ「その日まだ実施していない」なら開始する。
+    const nowMinutes = hour * 60 + minute;
+    const joinMinutes = RADIO_JOIN_HOUR * 60 + RADIO_JOIN_MINUTE;
+    const playMinutes = RADIO_PLAY_HOUR * 60 + RADIO_PLAY_MINUTE;
+
     if (
         !session &&
-        hour === RADIO_JOIN_HOUR &&
-        minute === RADIO_JOIN_MINUTE &&
+        nowMinutes >= joinMinutes &&
+        nowMinutes < playMinutes &&
         radio.lastSessionDate !== today
     ) {
         await startMorningSession(client, data, saveData, today);
@@ -412,11 +584,7 @@ async function handleRadioTaisoSchedule(client, loadData, saveData) {
 
     if (!session) return;
 
-    if (
-        session.phase === 'collecting' &&
-        (hour > RADIO_PLAY_HOUR ||
-            (hour === RADIO_PLAY_HOUR && minute >= RADIO_PLAY_MINUTE))
-    ) {
+    if (session.phase === 'collecting' && nowMinutes >= playMinutes) {
         await playRadioTaiso(client, data, saveData);
         return;
     }
@@ -567,8 +735,56 @@ async function endRadioEvent(client, data, saveData) {
     return { ok: true, message: content };
 }
 
+/**
+ * /radio-test: 参加記録に影響を与えずに、その場で音声再生だけを試す
+ */
+async function testRadioAudio(client, data) {
+    const radio = ensureRadioData(data);
+
+    if (radio.session) {
+        return {
+            ok: false,
+            message: '本日のラジオ体操セッションの進行中です。終了後に試してください。'
+        };
+    }
+
+    const setup = describeAudioSetup();
+
+    if (!setup.ok) {
+        return { ok: false, message: `再生できません。\n${setup.reason}` };
+    }
+
+    const voiceChannel = await fetchVoiceChannel(client);
+    const result = await playAudioInChannel(voiceChannel);
+
+    disconnectVoice();
+
+    return {
+        ok: result.ok,
+        message: result.ok
+            ? `再生に成功しました。\n${setup.reason}`
+            : `再生に失敗しました。\n原因: ${result.reason}`
+    };
+}
+
+/**
+ * 起動時に前提条件を確認してログに出す（問題があっても起動は止めない）
+ */
+function logRadioSetup() {
+    const setup = describeAudioSetup();
+
+    if (setup.ok) {
+        console.log(`[radioTaiso] 再生準備OK / ${setup.reason}`);
+    } else {
+        console.warn(`[radioTaiso] 再生できない状態です: ${setup.reason}`);
+    }
+}
+
 module.exports = {
     handleRadioTaisoSchedule,
+    testRadioAudio,
+    logRadioSetup,
+    describeAudioSetup,
     handleRadioVoiceStateUpdate,
     startRadioEvent,
     endRadioEvent,

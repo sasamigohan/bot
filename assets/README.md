@@ -23,9 +23,24 @@
 そのぶん **本番では `.ogg`（Ogg/Opus）を置くのが確実** です。Ogg/Opus なら ffmpeg も
 音声エンコーダも一切通らないため、`ffmpeg-static` が無い環境でもそのまま再生できます。
 
-システムの ffmpeg を使いたい場合は `dnf install -y ffmpeg` 等で入れたうえで、
-環境変数 `FFMPEG_PATH=/usr/bin/ffmpeg` を指定してください
-（`FFMPEG_PATH` が設定済みなら `ffmpeg-static` は参照されません）。
+システムの ffmpeg を使う場合は `sudo apt install -y ffmpeg`（Ubuntu）で入れてください。
+PATH 上に `ffmpeg` があれば自動的に使われます。
+
+### FFMPEG_PATH について
+
+`@discordjs/voice` が内部で使う prism-media 1.3.x は、ffmpeg を
+`[ffmpeg-static, 'ffmpeg', 'avconv', './ffmpeg', './avconv']` の固定順でしか探さず、
+**`FFMPEG_PATH` 環境変数を直接は見ません**。
+
+そのため radioTaiso.js 側で、`FFMPEG_PATH` に指定された実在するバイナリの
+ディレクトリを `process.env.PATH` の先頭に追加してから再生しています。
+`FFMPEG_PATH` を使う場合は、**ファイル名が `ffmpeg` であること**が条件です。
+
+## 動作確認
+
+`/radio-test`（管理者専用）で、翌朝を待たずにその場で再生を試せます。
+失敗した場合は原因（音源が無い／ffmpeg が無い等）が返ります。
+Bot 起動時にも `[radioTaiso]` で始まる準備状況がログに出力されます。
 
 音源ファイルが見つからない場合でも Bot は停止しません。
 再生だけスキップし、参加者の記録・ポイント付与・一覧投稿は通常どおり行われます。
