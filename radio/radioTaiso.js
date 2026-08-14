@@ -437,6 +437,30 @@ function checkVoicePermissions(voiceChannel) {
  *      VOICE_SERVER_UPDATE が返らず、永久に signalling のままになる。
  *      一度 channel_id: null を送って抜けてから入り直す必要がある。
  */
+/**
+ * Bot自身の GuildMember を確実にキャッシュへ載せる。
+ *
+ * discord.js は VOICE_STATE_UPDATE を受け取ったとき、
+ *   const member = guild.members.cache.get(data.user_id);
+ *   if (member?.user.id === client.user.id) client.voice.onVoiceStateUpdate(data);
+ * という条件で @discordjs/voice へ転送する（actions/VoiceStateUpdate.js）。
+ *
+ * つまりBot自身のメンバーがキャッシュに無いと、パケットは届いているのに
+ * 転送されず、接続は永久に signalling のままになる。
+ * このBotは毎分の全メンバーfetchがタイムアウトすることがあり
+ * （GuildMembersTimeout）、キャッシュが欠けやすいため明示的に取得しておく。
+ */
+async function ensureSelfMemberCached(guild, client) {
+    if (!client || !client.user) return;
+
+    try {
+        await guild.members.fetch({ user: client.user.id, force: true });
+        console.log('[radioTaiso] Bot自身のメンバー情報をキャッシュしました');
+    } catch (err) {
+        console.warn('[radioTaiso] Bot自身のメンバー取得に失敗:', err.message);
+    }
+}
+
 async function clearStaleVoiceState(voice, guild) {
     disconnectVoice();
 
@@ -480,9 +504,32 @@ async function clearStaleVoiceState(voice, guild) {
  * という動作なので、どちらが欠けているかで原因が切り分けられる。
  */
 function watchVoiceGateway(client, guildId) {
-    const seen = { stateUpdate: false, serverUpdate: false, endpoint: null };
+    const seen = {
+        stateUpdate: false,
+        serverUpdate: false,
+        endpoint: null,
+        // discord.js が @discordjs/voice へ転送した時点で出す debug ログ。
+        // raw で受信していてもこちらが出ない場合、discord.js内部の
+        // 転送条件（Bot自身のメンバーがキャッシュにあるか）で弾かれている。
+        forwardedState: false,
+        forwardedServer: false
+    };
 
     if (!client || !client.user) return { seen, stop: () => {} };
+
+    const onDebug = message => {
+        if (typeof message !== 'string') return;
+
+        if (message.startsWith('[VOICE] received voice state update')) {
+            seen.forwardedState = true;
+            console.log('[radioTaiso] discord.js → voice: state update 転送OK');
+        }
+
+        if (message.startsWith('[VOICE] received voice server')) {
+            seen.forwardedServer = true;
+            console.log('[radioTaiso] discord.js → voice: server update 転送OK');
+        }
+    };
 
     const onRaw = packet => {
         if (!packet || !packet.t || !packet.d) return;
@@ -506,8 +553,15 @@ function watchVoiceGateway(client, guildId) {
     };
 
     client.on('raw', onRaw);
+    client.on('debug', onDebug);
 
-    return { seen, stop: () => client.off('raw', onRaw) };
+    return {
+        seen,
+        stop: () => {
+            client.off('raw', onRaw);
+            client.off('debug', onDebug);
+        }
+    };
 }
 
 /**
@@ -533,11 +587,28 @@ function describeGatewayFindings(seen) {
         );
     }
 
+    // ここから先は「パケットは両方届いている」ケース。
+    // discord.js が @discordjs/voice へ転送したかどうかで切り分ける。
+    if (!seen.forwardedState || !seen.forwardedServer) {
+        const missing = [];
+        if (!seen.forwardedState) missing.push('state update');
+        if (!seen.forwardedServer) missing.push('server update');
+
+        return (
+            `\n【診断】パケットは両方受信していますが（endpoint=${seen.endpoint}）、` +
+            `discord.js が @discordjs/voice へ ${missing.join(' と ')} を転送していません。` +
+            'discord.jsはBot自身のGuildMemberがキャッシュに無いと転送をスキップするため、' +
+            'メンバーキャッシュが原因の可能性が高いです。' +
+            'この試行では事前取得を行っているので、それでも出る場合は' +
+            'Botの権限（サーバーメンバーインテント）を確認してください。'
+        );
+    }
+
     return (
-        '\n【診断】必要なパケットは両方とも受信できています' +
+        '\n【診断】パケットの受信・転送とも正常です' +
         `（endpoint=${seen.endpoint}）。` +
-        'にもかかわらずReadyにならないため、@discordjs/voice への受け渡しで' +
-        '問題が起きています。npm install のやり直しをお試しください。'
+        'にもかかわらずReadyにならないため、@discordjs/voice 側の問題です。' +
+        'node_modules を削除して npm install をやり直してください。'
     );
 }
 
@@ -569,6 +640,7 @@ async function ensureReadyConnection(voice, voiceChannel, client = null) {
 
     try {
         for (let attempt = 1; attempt <= 2; attempt++) {
+            await ensureSelfMemberCached(voiceChannel.guild, client);
             await clearStaleVoiceState(voice, voiceChannel.guild);
 
             currentConnection = voice.joinVoiceChannel({
