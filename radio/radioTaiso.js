@@ -448,7 +448,11 @@ function describeVoiceCloseCode(code) {
         4012: '不明なプロトコル',
         4014: '切断されました（キック/チャンネル削除/権限喪失）',
         4015: 'ボイスサーバーがクラッシュ',
-        4016: '不明な暗号化方式'
+        4016: '不明な暗号化方式',
+        4017: 'ボイスゲートウェイのバージョンが古い（@discordjs/voice を 0.19 以上に更新してください）',
+        4020: '不正なリクエスト',
+        4021: 'レート制限による切断',
+        4022: '通話が終了しました'
     };
 
     return table[code] || '詳細不明';
@@ -802,6 +806,10 @@ function describeGatewayFindings(seen, adapterLog = null, udpCheck = null) {
                     advice =
                         ' 暗号化方式のネゴシエーションに失敗しています。' +
                         'libsodium-wrappers が正しく入っているか確認してください。';
+                } else if (code === 4017) {
+                    advice =
+                        ' Discordが古いボイスゲートウェイの受付を終了しています。' +
+                        'npm install @discordjs/voice@latest で更新してください。';
                 }
 
                 return (
