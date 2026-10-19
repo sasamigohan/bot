@@ -21,7 +21,7 @@ const {
   buildSessionEndMessage,
 } = require('./shardMessage');
 
-const SHARD_CHANNEL_ID = '1530865975455649902';
+const { getNotifyChannelId } = require('../utils/channelConfig');
 
 // sentSessionKeysに溜め続けると肥大化するため、この日数より古いキーは間引く
 const SESSION_KEY_RETENTION_DAYS = 3;
@@ -60,9 +60,10 @@ function getJstTodayAsDate(date = new Date()) {
  */
 async function sendToShardChannel(client, content) {
   try {
-    const channel = await client.channels.fetch(SHARD_CHANNEL_ID);
+    const channelId = getNotifyChannelId('shard');
+    const channel = await client.channels.fetch(channelId);
     if (!channel) {
-      console.error('[shardScheduler] チャンネルが見つかりません:', SHARD_CHANNEL_ID);
+      console.error('[shardScheduler] チャンネルが見つかりません:', channelId);
       return;
     }
     await channel.send(content);
@@ -180,5 +181,4 @@ async function handleShardSchedule(client, loadData, saveData) {
 
 module.exports = {
   handleShardSchedule,
-  SHARD_CHANNEL_ID,
 };

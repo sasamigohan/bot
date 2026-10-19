@@ -6,13 +6,15 @@
  * 既存の破片通知（shard/shardScheduler.js）と同じ流儀で、
  * client.once('clientReady', ...) 内から setInterval で毎分呼び出す。
  *
- * 1日の流れ（イベント期間中＝ /radio-start 済みのときだけ動く）:
- *   1. 8:50 JST  対象VCに参加し、参加ログの収集を開始する
+ * 1日の流れ（イベント期間中＝ /radio-start 済みのときだけ動く）。
+ * 第1部（6:30受付→6:40再生）と第2部（8:50受付→9:00再生）の2回、同じ流れを行う:
+ *   1. 受付開始  参加ログの収集を開始する（VCにはまだ入らない）
  *                （このときVCにいる人＋以降に入ってきた人を記録）
- *   2. 9:00 JST  ラジオ体操第一の音声を再生する
+ *   2. 再生時刻  VCに接続し、ラジオ体操第一の音声を再生する
  *   3. 再生終了  そこまでにVCにいた人を確定し、VCから切断。
- *                【本日のラジオ体操参加者】を告知チャンネルに投稿し、
- *                参加者に DAILY_POINT を付与、参加日を記録する
+ *                【本日のラジオ体操参加者】を告知チャンネルに投稿する。
+ *                その日の初参加の人にだけ参加日を記録し DAILY_POINT を付与する
+ *                （第1部・第2部の両方に参加しても1日・1回分）
  *   4. /radio-end（約1ヶ月のイベント終了時）で参加日数ランキングを発表し、
  *      1位に TOP_BONUS_POINT を付与する
  *
@@ -27,18 +29,20 @@ const path = require('path');
 const { PermissionsBitField, ChannelType, GatewayIntentBits } = require('discord.js');
 
 const { ensureUser, addPoints, addPointLog } = require('../utils/dataManager');
+const { getNotifyChannelId } = require('../utils/channelConfig');
 
 // 対象のボイスチャンネル
 const RADIO_VC_ID = '1496874003413864570';
-// 参加者一覧・ランキングを投稿するテキストチャンネル
-const RADIO_ANNOUNCE_CHANNEL_ID = '1453193177581486100';
+// ※参加者一覧・ランキングを投稿するテキストチャンネルは /notify-channel で設定する（type: ラジオ体操の告知）
 
-// VCに入って参加ログの収集を始める時刻（JST）
-const RADIO_JOIN_HOUR = 8;
-const RADIO_JOIN_MINUTE = 50;
-// 音声を流し始める時刻（JST）
-const RADIO_PLAY_HOUR = 9;
-const RADIO_PLAY_MINUTE = 0;
+// 開催枠（JST）。join で参加ログの収集を始め、play で音声を流す。
+// どちらか一方に参加すればその日は「参加1日」。両方参加しても1日のまま。
+const RADIO_SLOTS = [
+    { id: 'early', label: '第1部', joinHour: 6, joinMinute: 30, playHour: 6, playMinute: 40 },
+    { id: 'main', label: '第2部', joinHour: 8, joinMinute: 50, playHour: 9, playMinute: 0 }
+];
+// 再起動などで再生時刻を大きく過ぎても収集中のまま残っていた場合、再生せずに締めるまでの猶予（分）
+const LATE_PLAY_GRACE_MINUTES = 10;
 
 // 参加者1人あたりの1日のポイント
 const DAILY_POINT = 50;
@@ -85,8 +89,24 @@ function ensureRadioData(data) {
     }
 
     if (!data.radioTaiso.attendance) data.radioTaiso.attendance = {};
+    if (!Array.isArray(data.radioTaiso.doneSlotKeys)) data.radioTaiso.doneSlotKeys = [];
 
     return data.radioTaiso;
+}
+
+function formatTime(hour, minute) {
+    return `${hour}:${String(minute).padStart(2, '0')}`;
+}
+
+function toMinutes(hour, minute) {
+    return hour * 60 + minute;
+}
+
+/**
+ * セッションの枠を返す。2部制導入前に作られたセッション（slot未設定）は第2部として扱う。
+ */
+function getSlot(slotId) {
+    return RADIO_SLOTS.find(slot => slot.id === slotId) || RADIO_SLOTS[RADIO_SLOTS.length - 1];
 }
 
 /**
@@ -252,7 +272,7 @@ function getInputType(voice, audioPath) {
 
 async function fetchAnnounceChannel(client) {
     try {
-        return await client.channels.fetch(RADIO_ANNOUNCE_CHANNEL_ID);
+        return await client.channels.fetch(getNotifyChannelId('radio'));
     } catch (err) {
         console.error('[radioTaiso] 告知チャンネルを取得できません:', err.message);
         return null;
@@ -315,20 +335,25 @@ function disconnectVoice() {
 }
 
 /**
- * 8:50: VCに参加して、その日の参加ログ収集を始める
+ * 受付開始（6:30 / 8:50）: その枠の参加ログ収集を始める
  */
-async function startMorningSession(client, data, saveData, today) {
+async function startMorningSession(client, data, saveData, today, slot) {
     const radio = ensureRadioData(data);
     const voiceChannel = await fetchVoiceChannel(client);
 
     radio.session = {
         date: today,
+        slot: slot.id,
         participants: [],
         phase: 'collecting',
         startedAt: Date.now(),
         playStartedAt: null
     };
     radio.lastSessionDate = today;
+
+    // 実施済みの枠は当日分だけ残せば足りる
+    radio.doneSlotKeys = radio.doneSlotKeys.filter(key => key.startsWith(`${today}:`));
+    radio.doneSlotKeys.push(`${today}:${slot.id}`);
 
     if (voiceChannel) {
         collectCurrentMembers(voiceChannel, radio.session);
@@ -337,19 +362,19 @@ async function startMorningSession(client, data, saveData, today) {
     saveData(data);
 
     console.log(
-        `[radioTaiso] ${today} の参加ログ収集を開始しました` +
+        `[radioTaiso] ${today} ${slot.label} の参加ログ収集を開始しました` +
         `（開始時点の在室: ${radio.session.participants.length}人）`
     );
 
-    // 8:50〜9:00 はVCに接続しない。
+    // 受付中（再生時刻まで）はVCに接続しない。
     // 参加ログの収集は voiceStateUpdate とVCの在室者ポーリングで行うため、
     // Bot自身がVCに入っている必要がない。
     // ここで接続すると、失敗時に再接続を繰り返してBotが出入りして見えるため、
-    // 接続は再生直前（9:00）にまとめて行う。
+    // 接続は再生直前にまとめて行う。
 }
 
 /**
- * 9:00: 音声を再生する。再生終了（または失敗）後に締め処理へ進む。
+ * 再生時刻（6:40 / 9:00）: 音声を再生する。再生終了（または失敗）後に締め処理へ進む。
  */
 async function playRadioTaiso(client, data, saveData) {
     const radio = ensureRadioData(data);
@@ -1130,15 +1155,21 @@ async function finishMorningSession(client, data, saveData, { played, reason = '
 
     const participants = [...new Set(session.participants)];
     const date = session.date;
+    const slot = getSlot(session.slot);
+
+    // 日数とポイントは「その日の初参加」のときだけ加算する。
+    // 第1部と第2部の両方に参加しても、1日・50ptのまま。
+    const newlyAttended = [];
 
     for (const participantId of participants) {
         ensureUser(data, participantId);
 
         if (!radio.attendance[participantId]) radio.attendance[participantId] = [];
 
-        if (!radio.attendance[participantId].includes(date)) {
-            radio.attendance[participantId].push(date);
-        }
+        if (radio.attendance[participantId].includes(date)) continue;
+
+        radio.attendance[participantId].push(date);
+        newlyAttended.push(participantId);
 
         addPoints(data, participantId, DAILY_POINT, { addToLevel: false });
 
@@ -1146,7 +1177,7 @@ async function finishMorningSession(client, data, saveData, { played, reason = '
             userId: participantId,
             type: 'radio',
             amount: DAILY_POINT,
-            detail: `ラジオ体操 ${date}`
+            detail: `ラジオ体操 ${date} ${slot.label}`
         });
     }
 
@@ -1156,18 +1187,28 @@ async function finishMorningSession(client, data, saveData, { played, reason = '
     const channel = await fetchAnnounceChannel(client);
     if (!channel) return;
 
-    const lines = [`**【本日のラジオ体操参加者】** (${date})`];
+    const lines = [
+        `**【本日のラジオ体操参加者】${slot.label}（${formatTime(slot.joinHour, slot.joinMinute)}）** (${date})`
+    ];
 
     if (participants.length === 0) {
-        lines.push('本日の参加者はいませんでした。');
+        lines.push('参加者はいませんでした。');
     } else {
         participants.forEach((participantId, index) => {
             const days = (radio.attendance[participantId] || []).length;
-            lines.push(`${index + 1}. <@${participantId}>（通算 ${days}日目）`);
+            const note = newlyAttended.includes(participantId) ? '' : '・本日参加済み';
+            lines.push(`${index + 1}. <@${participantId}>（通算 ${days}日目${note}）`);
         });
 
         lines.push('');
-        lines.push(`参加者 ${participants.length} 名に ${DAILY_POINT}pt を付与しました。`);
+
+        if (newlyAttended.length > 0) {
+            lines.push(`本日初参加の ${newlyAttended.length} 名に ${DAILY_POINT}pt を付与しました。`);
+        }
+
+        if (newlyAttended.length < participants.length) {
+            lines.push('※本日すでに参加済みの方は、日数・ポイントとも重複して加算されません。');
+        }
     }
 
     if (!played) {
@@ -1206,23 +1247,39 @@ async function handleRadioTaisoSchedule(client, loadData, saveData) {
         return;
     }
 
-    // 8:50ちょうどの1回だけを狙うと、setIntervalのズレや再起動で丸ごと空振りする。
-    // 「8:50以降 9:00未満」かつ「その日まだ実施していない」なら開始する。
-    const nowMinutes = hour * 60 + minute;
-    const joinMinutes = RADIO_JOIN_HOUR * 60 + RADIO_JOIN_MINUTE;
-    const playMinutes = RADIO_PLAY_HOUR * 60 + RADIO_PLAY_MINUTE;
+    const nowMinutes = toMinutes(hour, minute);
 
-    if (
-        !session &&
-        nowMinutes >= joinMinutes &&
-        nowMinutes < playMinutes &&
-        radio.lastSessionDate !== today
-    ) {
-        await startMorningSession(client, data, saveData, today);
+    // 受付開始時刻ちょうどの1回だけを狙うと、setIntervalのズレや再起動で丸ごと空振りする。
+    // 「受付開始以降・再生時刻未満」かつ「その枠を当日まだ実施していない」なら開始する。
+    if (!session) {
+        const slot = RADIO_SLOTS.find(candidate =>
+            nowMinutes >= toMinutes(candidate.joinHour, candidate.joinMinute) &&
+            nowMinutes < toMinutes(candidate.playHour, candidate.playMinute) &&
+            !radio.doneSlotKeys.includes(`${today}:${candidate.id}`)
+        );
+
+        if (slot) {
+            await startMorningSession(client, data, saveData, today, slot);
+        }
+
         return;
     }
 
-    if (!session) return;
+    const slot = getSlot(session.slot);
+    const playMinutes = toMinutes(slot.playHour, slot.playMinute);
+
+    // 再起動などで再生時刻を大きく過ぎていたら、今さら流さずに記録だけ締める。
+    // 残したままだと次の枠が始められなくなる。
+    if (
+        session.phase === 'collecting' &&
+        nowMinutes >= playMinutes + LATE_PLAY_GRACE_MINUTES
+    ) {
+        await finishMorningSession(client, data, saveData, {
+            played: false,
+            reason: '再生時刻を過ぎていたため、再生せずに締めました。'
+        });
+        return;
+    }
 
     if (session.phase === 'collecting' && nowMinutes >= playMinutes) {
         await playRadioTaiso(client, data, saveData);
@@ -1284,18 +1341,26 @@ function startRadioEvent(data, saveData) {
     radio.active = true;
     radio.startedDate = getJstDateString();
     radio.lastSessionDate = null;
+    radio.doneSlotKeys = [];
     radio.attendance = {};
     radio.session = null;
 
     saveData(data);
 
+    const schedule = RADIO_SLOTS
+        .map(slot =>
+            `・${slot.label}：${formatTime(slot.joinHour, slot.joinMinute)} 受付開始 → ` +
+            `${formatTime(slot.playHour, slot.playMinute)} ラジオ体操第一`
+        )
+        .join('\n');
+
     return {
         ok: true,
         message:
             `ラジオ体操イベントを開始しました（${radio.startedDate}〜）。\n` +
-            `毎朝 ${RADIO_JOIN_HOUR}:${String(RADIO_JOIN_MINUTE).padStart(2, '0')} に <#${RADIO_VC_ID}> へ参加し、` +
-            `${RADIO_PLAY_HOUR}:${String(RADIO_PLAY_MINUTE).padStart(2, '0')} からラジオ体操第一を再生します。\n` +
-            `参加者には毎日 ${DAILY_POINT}pt、終了時の1位には ${TOP_BONUS_POINT}pt を付与します。`
+            `毎朝 <#${RADIO_VC_ID}> で次の2回開催します。\n${schedule}\n` +
+            'どちらか一方に参加すればその日は参加1日としてカウントされます（両方参加しても1日）。\n' +
+            `参加者には1日につき ${DAILY_POINT}pt、終了時の1位には ${TOP_BONUS_POINT}pt を付与します。`
     };
 }
 
@@ -1357,6 +1422,7 @@ async function endRadioEvent(client, data, saveData) {
     radio.active = false;
     radio.session = null;
     radio.lastSessionDate = null;
+    radio.doneSlotKeys = [];
 
     disconnectVoice();
     saveData(data);
@@ -1440,7 +1506,6 @@ module.exports = {
     startRadioEvent,
     endRadioEvent,
     RADIO_VC_ID,
-    RADIO_ANNOUNCE_CHANNEL_ID,
     DAILY_POINT,
     TOP_BONUS_POINT
 };

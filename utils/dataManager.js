@@ -145,6 +145,7 @@ function normalizeData(data) {
     if (!data.colorRoleMap) data.colorRoleMap = {};
     if (!data.detachedColorRoles) data.detachedColorRoles = {};
     if (!data.dailyEvents) data.dailyEvents = {};
+    if (!data.notifyChannels) data.notifyChannels = {};
     if (!('dailyEventAnnounceSentDate' in data)) data.dailyEventAnnounceSentDate = null;
     if (!data.shardData) {
         data.shardData = {
@@ -184,6 +185,15 @@ function normalizeData(data) {
             if (!Array.isArray(session.participants)) session.participants = [];
             session.participants = [...new Set(session.participants)];
             if (!session.phase) session.phase = 'collecting';
+        }
+    }
+    // 2部制（6:30 / 8:50）で「その日どの枠を実施済みか」を "YYYY-MM-DD:枠ID" で持つ
+    if (!Array.isArray(data.radioTaiso.doneSlotKeys)) {
+        data.radioTaiso.doneSlotKeys = [];
+
+        // 2部制導入前は8:50枠の1日1回だけだったため、当日実施済みなら第2部を実施済みとみなす
+        if (data.radioTaiso.lastSessionDate) {
+            data.radioTaiso.doneSlotKeys.push(`${data.radioTaiso.lastSessionDate}:main`);
         }
     }
     if (!data.bombMode) {
