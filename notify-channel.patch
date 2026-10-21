@@ -1,0 +1,435 @@
+diff -ruN a/index.js b/index.js
+--- a/index.js	2026-10-19 00:55:38.706194380 +0000
++++ b/index.js	2026-10-19 00:55:38.707352975 +0000
+@@ -13,7 +13,8 @@
+     ButtonStyle,
+     EmbedBuilder,
+     AttachmentBuilder,
+-    MessageFlags
++    MessageFlags,
++    ChannelType
+ } = require('discord.js');
+ 
+ const {
+@@ -30,6 +31,13 @@
+ const shop = require('./config/shop');
+ const gacha = require('./config/gacha');
+ const settings = require('./config/settings');
++const {
++    NOTIFY_CHANNELS,
++    getNotifyChannelId,
++    isCustomNotifyChannel,
++    setNotifyChannel,
++    resetNotifyChannel
++} = require('./utils/channelConfig');
+ const { handleShardSchedule } = require('./shard/shardScheduler');
+ const { handleShardNowCommand, handleShardTimeCommand } = require('./shard/shardCommands');
+ const {
+@@ -222,7 +230,6 @@
+ 
+ const timeoutList = [5, 10, 15, 30, 60];
+ 
+-const SPECIAL_BOMB_MODE_CHANNEL_ID = '1453193177581486100';
+ const SPECIAL_BOMB_RED_GIF = 'https://cdn.discordapp.com/attachments/1453193296011726868/1519289095501643907/4d6c59380065a2fb.gif?ex=6a3d03bb&is=6a3bb23b&hm=9730c6037f153f1127060873b19dfb1d2c88614f5abb3071c63de8ef8f38b44d&';
+ const SPECIAL_BOMB_MICHAEL_GIF = 'https://media.tenor.com/x8v1oNUOmg4AAAAd/explosion-anime.gif';
+ const SPECIAL_BOMB_START_RATE_MIN = 0.05;
+@@ -235,8 +242,6 @@
+ const SPECIAL_BOMB_ROLL_CHANCE = 0.004;
+ const SPECIAL_BOMB_DURATION_MS = 3 * 60 * 60 * 1000;
+ 
+-const DAILY_EVENT_ANNOUNCE_CHANNEL_ID = '1530865975455649902';
+-
+ const DAILY_EVENT_TYPE_LABELS = {
+     season: '季節',
+     event: 'イベント',
+@@ -812,9 +817,11 @@
+ 
+     let channel = fallbackChannel;
+ 
+-    if (settings.LEVEL_ANNOUNCE_CHANNEL_ID) {
++    const levelChannelId = getNotifyChannelId('level_announce');
++
++    if (levelChannelId) {
+         try {
+-            channel = await guild.channels.fetch(settings.LEVEL_ANNOUNCE_CHANNEL_ID);
++            channel = await guild.channels.fetch(levelChannelId);
+         } catch {}
+     }
+ 
+@@ -961,7 +968,7 @@
+ 
+ async function sendSpecialBombEmbed(type, stage, bombMode, options = {}) {
+     try {
+-        const channel = await client.channels.fetch(SPECIAL_BOMB_MODE_CHANNEL_ID);
++        const channel = await client.channels.fetch(getNotifyChannelId('bomb_mode'));
+         if (!channel || !channel.send) return null;
+ 
+         const payload = {
+@@ -992,7 +999,7 @@
+     // 最後の10分通知メッセージを削除
+     if (previous.lastRateMessageId) {
+         try {
+-            const channel = await client.channels.fetch(SPECIAL_BOMB_MODE_CHANNEL_ID);
++            const channel = await client.channels.fetch(getNotifyChannelId('bomb_mode'));
+             const oldMsg = await channel.messages.fetch(previous.lastRateMessageId);
+             await oldMsg.delete();
+         } catch {
+@@ -1035,7 +1042,7 @@
+     bombMode.type = type;
+     bombMode.remainingMessages = SPECIAL_BOMB_MESSAGE_LIMIT;
+     bombMode.startedAt = now.toISOString();
+-    bombMode.announceChannelId = SPECIAL_BOMB_MODE_CHANNEL_ID;
++    bombMode.announceChannelId = getNotifyChannelId('bomb_mode');
+     bombMode.expiresAt = new Date(now.getTime() + SPECIAL_BOMB_DURATION_MS).toISOString();
+     bombMode.lastRateMessageId = null;
+ 
+@@ -1088,7 +1095,7 @@
+         // 前回の10分通知メッセージを削除
+         if (bombMode.lastRateMessageId) {
+             try {
+-                const channel = await client.channels.fetch(SPECIAL_BOMB_MODE_CHANNEL_ID);
++                const channel = await client.channels.fetch(getNotifyChannelId('bomb_mode'));
+                 const oldMsg = await channel.messages.fetch(bombMode.lastRateMessageId);
+                 await oldMsg.delete();
+             } catch {
+@@ -1674,6 +1681,56 @@
+         .setName('radio-end')
+         .setDescription('管理者専用：ラジオ体操イベントを終了し、参加日数ランキングを発表'),
+ 
++    new SlashCommandBuilder()
++        .setName('notify-channel')
++        .setDescription('管理者専用：各種通知の送信先チャンネルを設定')
++        .addSubcommand(sub =>
++            sub
++                .setName('set')
++                .setDescription('通知の送信先チャンネルを変更')
++                .addStringOption(opt =>
++                    opt
++                        .setName('type')
++                        .setDescription('通知の種類')
++                        .setRequired(true)
++                        .addChoices(
++                            ...Object.entries(NOTIFY_CHANNELS).map(([value, def]) => ({
++                                name: def.label,
++                                value
++                            }))
++                        )
++                )
++                .addChannelOption(opt =>
++                    opt
++                        .setName('channel')
++                        .setDescription('送信先のチャンネル')
++                        .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
++                        .setRequired(true)
++                )
++        )
++        .addSubcommand(sub =>
++            sub
++                .setName('reset')
++                .setDescription('通知の送信先を初期値に戻す')
++                .addStringOption(opt =>
++                    opt
++                        .setName('type')
++                        .setDescription('通知の種類')
++                        .setRequired(true)
++                        .addChoices(
++                            ...Object.entries(NOTIFY_CHANNELS).map(([value, def]) => ({
++                                name: def.label,
++                                value
++                            }))
++                        )
++                )
++        )
++        .addSubcommand(sub =>
++            sub
++                .setName('list')
++                .setDescription('現在の通知チャンネル設定を確認')
++        ),
++
+ ].map(c => c.toJSON());
+ 
+ const rest =
+@@ -1824,7 +1881,7 @@
+ 
+     if (data.dailyReminderSentDate === today) return;
+ 
+-    const channelId = settings.DAILY_REMINDER_CHANNEL_ID;
++    const channelId = getNotifyChannelId('daily_reminder');
+     if (!channelId || channelId.includes("ここに")) return;
+ 
+     let channel;
+@@ -1895,7 +1952,7 @@
+     let channel;
+ 
+     try {
+-        channel = await client.channels.fetch(DAILY_EVENT_ANNOUNCE_CHANNEL_ID);
++        channel = await client.channels.fetch(getNotifyChannelId('daily_event'));
+     } catch {
+         return;
+     }
+@@ -2668,6 +2725,8 @@
+                     '`/radio-end` — ラジオ体操イベントを終了し、参加日数ランキングを発表します。1位には1000ptを付与します。',
+                     '`/radio-test` — ラジオ体操の音声再生をその場でテストします。参加記録やポイントには影響しません。' +
+                         '再生できない場合は原因（音源が無い／ffmpegが無い等）を返します。',
++                    '`/notify-channel set type:<通知の種類> channel:<チャンネル>` — 各種通知の送信先チャンネルを変更します。' +
++                        '`reset`で初期値に戻し、`list`で現在の設定（送信できないチャンネルには⚠️）を確認できます。',
+                     '`/db-result` は主催者に加えて管理者も結果確定が可能です。',
+                     '`/mutebomb` は管理者、または特定のロールを持つ人が実行できます（下記参照）。'
+                 ]
+@@ -2704,7 +2763,7 @@
+             '`/anonpoll`\n\n' +
+             '🛠️ **管理者専用**\n' +
+             '`/m-addt` `/m-addp` `/m-roleap` `/m-reset` `/m-bmode` ' +
+-            '`/m-joinvote` `/cr-set` `/mutebomb` `/radio-start` `/radio-end` `/radio-test`';
++            '`/m-joinvote` `/cr-set` `/mutebomb` `/radio-start` `/radio-end` `/radio-test` `/notify-channel`';
+ 
+         return interaction.reply({
+             content: overviewText,
+@@ -2886,6 +2945,102 @@
+         });
+     }
+ 
++    if (interaction.commandName === 'notify-channel') {
++        if (
++            !interaction.member.permissions.has(
++                PermissionsBitField.Flags.Administrator
++            )
++        ) {
++            return interaction.reply({
++                content: '管理者専用です。',
++                ephemeral: true
++            });
++        }
++
++        const sub = interaction.options.getSubcommand();
++
++        if (sub === 'list') {
++            await interaction.deferReply({ ephemeral: true });
++
++            const lines = [];
++
++            for (const [key, def] of Object.entries(NOTIFY_CHANNELS)) {
++                const id = getNotifyChannelId(key);
++
++                if (!id) {
++                    lines.push(`**${def.label}**：${def.emptyText || '未設定'}`);
++                    continue;
++                }
++
++                let reachable = true;
++
++                try {
++                    await client.channels.fetch(id);
++                } catch {
++                    reachable = false;
++                }
++
++                lines.push(
++                    `**${def.label}**：<#${id}>` +
++                    (isCustomNotifyChannel(key) ? '' : '（初期値）') +
++                    (reachable ? '' : ' ⚠️ チャンネルを取得できません')
++                );
++            }
++
++            return interaction.editReply({
++                content: '📢 **通知チャンネル一覧**\n' + lines.join('\n')
++            });
++        }
++
++        const key = interaction.options.getString('type');
++        const def = NOTIFY_CHANNELS[key];
++
++        if (!def) {
++            return interaction.reply({
++                content: '不明な通知の種類です。',
++                ephemeral: true
++            });
++        }
++
++        if (sub === 'reset') {
++            resetNotifyChannel(data, key);
++            saveData(data);
++
++            return interaction.reply({
++                content: `**${def.label}** の送信先を初期値に戻しました。`,
++                ephemeral: true
++            });
++        }
++
++        // sub === 'set'
++        const channel = interaction.options.getChannel('channel');
++        const botPermissions = channel.permissionsFor(interaction.guild.members.me);
++
++        if (
++            !botPermissions ||
++            !botPermissions.has([
++                PermissionsBitField.Flags.ViewChannel,
++                PermissionsBitField.Flags.SendMessages,
++                PermissionsBitField.Flags.EmbedLinks
++            ])
++        ) {
++            return interaction.reply({
++                content:
++                    `<#${channel.id}> では Bot に「チャンネルを見る」「メッセージを送信」「埋め込みリンク」の` +
++                    '権限がありません。権限を付けてからもう一度設定してください。',
++                ephemeral: true
++            });
++        }
++
++        setNotifyChannel(data, key, channel.id);
++        saveData(data);
++
++        return interaction.reply({
++            content: `**${def.label}** の送信先を <#${channel.id}> に設定しました。`,
++            ephemeral: true
++        });
++    }
++
+     if (interaction.commandName === 'cr-set') {
+         if (
+             !interaction.member.permissions.has(
+diff -ruN a/radio/radioTaiso.js b/radio/radioTaiso.js
+--- a/radio/radioTaiso.js	2026-10-19 00:55:38.712893549 +0000
++++ b/radio/radioTaiso.js	2026-10-19 00:55:38.714192327 +0000
+@@ -29,11 +29,11 @@
+ const { PermissionsBitField, ChannelType, GatewayIntentBits } = require('discord.js');
+ 
+ const { ensureUser, addPoints, addPointLog } = require('../utils/dataManager');
++const { getNotifyChannelId } = require('../utils/channelConfig');
+ 
+ // 対象のボイスチャンネル
+ const RADIO_VC_ID = '1496874003413864570';
+-// 参加者一覧・ランキングを投稿するテキストチャンネル
+-const RADIO_ANNOUNCE_CHANNEL_ID = '1453193177581486100';
++// ※参加者一覧・ランキングを投稿するテキストチャンネルは /notify-channel で設定する（type: ラジオ体操の告知）
+ 
+ // 開催枠（JST）。join で参加ログの収集を始め、play で音声を流す。
+ // どちらか一方に参加すればその日は「参加1日」。両方参加しても1日のまま。
+@@ -272,7 +272,7 @@
+ 
+ async function fetchAnnounceChannel(client) {
+     try {
+-        return await client.channels.fetch(RADIO_ANNOUNCE_CHANNEL_ID);
++        return await client.channels.fetch(getNotifyChannelId('radio'));
+     } catch (err) {
+         console.error('[radioTaiso] 告知チャンネルを取得できません:', err.message);
+         return null;
+@@ -1506,7 +1506,6 @@
+     startRadioEvent,
+     endRadioEvent,
+     RADIO_VC_ID,
+-    RADIO_ANNOUNCE_CHANNEL_ID,
+     DAILY_POINT,
+     TOP_BONUS_POINT
+ };
+diff -ruN a/shard/shardScheduler.js b/shard/shardScheduler.js
+--- a/shard/shardScheduler.js	2026-10-19 00:55:38.710800548 +0000
++++ b/shard/shardScheduler.js	2026-10-19 00:55:38.711806430 +0000
+@@ -21,7 +21,7 @@
+   buildSessionEndMessage,
+ } = require('./shardMessage');
+ 
+-const SHARD_CHANNEL_ID = '1530865975455649902';
++const { getNotifyChannelId } = require('../utils/channelConfig');
+ 
+ // sentSessionKeysに溜め続けると肥大化するため、この日数より古いキーは間引く
+ const SESSION_KEY_RETENTION_DAYS = 3;
+@@ -60,9 +60,10 @@
+  */
+ async function sendToShardChannel(client, content) {
+   try {
+-    const channel = await client.channels.fetch(SHARD_CHANNEL_ID);
++    const channelId = getNotifyChannelId('shard');
++    const channel = await client.channels.fetch(channelId);
+     if (!channel) {
+-      console.error('[shardScheduler] チャンネルが見つかりません:', SHARD_CHANNEL_ID);
++      console.error('[shardScheduler] チャンネルが見つかりません:', channelId);
+       return;
+     }
+     await channel.send(content);
+@@ -180,5 +181,4 @@
+ 
+ module.exports = {
+   handleShardSchedule,
+-  SHARD_CHANNEL_ID,
+ };
+diff -ruN a/utils/channelConfig.js b/utils/channelConfig.js
+--- a/utils/channelConfig.js	1970-01-01 00:00:00.000000000 +0000
++++ b/utils/channelConfig.js	2026-10-19 00:55:38.715238524 +0000
+@@ -0,0 +1,65 @@
++const settings = require('../config/settings');
++const { loadData } = require('./dataManager');
++
++/**
++ * 通知チャンネルの一覧。
++ * /notify-channel で上書きされるまでは fallback（これまでの固定ID）が使われる。
++ * 設定値は data.notifyChannels に保存される（DBに入るのでBot再起動後も残る）。
++ */
++const NOTIFY_CHANNELS = {
++    daily_reminder: {
++        label: 'デイリーリマインダー',
++        fallback: () => settings.DAILY_REMINDER_CHANNEL_ID
++    },
++    level_announce: {
++        label: 'レベルアップ通知',
++        fallback: () => settings.LEVEL_ANNOUNCE_CHANNEL_ID,
++        // 空のときは、ポイントを獲得した発言のチャンネルに送る
++        emptyText: '未設定（発言したチャンネルに送信）'
++    },
++    bomb_mode: {
++        label: '特殊爆弾モード通知',
++        fallback: () => '1453193177581486100'
++    },
++    daily_event: {
++        label: 'デイリーイベント告知',
++        fallback: () => '1530865975455649902'
++    },
++    shard: {
++        label: 'シャード通知',
++        fallback: () => '1530865975455649902'
++    },
++    radio: {
++        label: 'ラジオ体操の告知',
++        fallback: () => '1453193177581486100'
++    }
++};
++
++function getNotifyChannelId(key) {
++    const def = NOTIFY_CHANNELS[key];
++    if (!def) throw new Error(`unknown notify channel key: ${key}`);
++
++    const custom = loadData().notifyChannels[key];
++    return custom || def.fallback() || '';
++}
++
++function isCustomNotifyChannel(key) {
++    return Boolean(loadData().notifyChannels[key]);
++}
++
++function setNotifyChannel(data, key, channelId) {
++    if (!data.notifyChannels) data.notifyChannels = {};
++    data.notifyChannels[key] = String(channelId);
++}
++
++function resetNotifyChannel(data, key) {
++    if (data.notifyChannels) delete data.notifyChannels[key];
++}
++
++module.exports = {
++    NOTIFY_CHANNELS,
++    getNotifyChannelId,
++    isCustomNotifyChannel,
++    setNotifyChannel,
++    resetNotifyChannel
++};
+diff -ruN a/utils/dataManager.js b/utils/dataManager.js
+--- a/utils/dataManager.js	2026-10-19 00:55:38.708605855 +0000
++++ b/utils/dataManager.js	2026-10-19 00:55:38.709697337 +0000
+@@ -145,6 +145,7 @@
+     if (!data.colorRoleMap) data.colorRoleMap = {};
+     if (!data.detachedColorRoles) data.detachedColorRoles = {};
+     if (!data.dailyEvents) data.dailyEvents = {};
++    if (!data.notifyChannels) data.notifyChannels = {};
+     if (!('dailyEventAnnounceSentDate' in data)) data.dailyEventAnnounceSentDate = null;
+     if (!data.shardData) {
+         data.shardData = {

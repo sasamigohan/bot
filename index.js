@@ -1892,9 +1892,25 @@ async function handleDailyReminder() {
         return;
     }
 
+    // 今サーバーに所属しているメンバーだけを対象にする（退出済みの人・Botにはメンションしない）
+    if (!channel.guild) return;
+
+    let members;
+
+    try {
+        members = await channel.guild.members.fetch();
+    } catch (err) {
+        console.error('[dailyReminder] メンバー一覧を取得できませんでした:', err);
+        return;
+    }
+
     const mentions = [];
 
     for (const [targetUserId, userData] of Object.entries(data.users)) {
+        const member = members.get(targetUserId);
+
+        if (!member || member.user.bot) continue;
+
         if (
             userData.lastOmikujiDate !== today &&
             !userData.dailyReminderMuted
