@@ -15,6 +15,7 @@
  */
 
 const { getShardSessions } = require('./shardCalculator');
+const { getResetHourJst, getShardShiftMinutes } = require('../utils/summerTime');
 const {
   buildShardMessage,
   buildSessionStartMessage,
@@ -110,9 +111,11 @@ async function handleShardSchedule(client, loadData, saveData) {
   let changed = false;
 
   // ---- 1. 毎日定時の「本日の破片」まとめ ----
-  const dailyHour = data.shardData.isSummerTime ? 16 : 17;
+  const dailyHour = getResetHourJst(data);
+  // サマータイム終了後は、破片セッションの時刻も1時間後ろにずれる
+  const shiftMinutes = getShardShiftMinutes(data);
   if (hour === dailyHour && minute === 0 && data.shardData.lastDailySentDate !== todayStr) {
-    await sendToShardChannel(client, buildShardMessage(todayDate));
+    await sendToShardChannel(client, buildShardMessage(todayDate, shiftMinutes));
     data.shardData.lastDailySentDate = todayStr;
     changed = true;
   }
@@ -129,7 +132,7 @@ async function handleShardSchedule(client, loadData, saveData) {
       todayDate.getDate() + offsetDays
     );
     const baseDateStr = `${baseDate.getFullYear()}-${String(baseDate.getMonth() + 1).padStart(2, '0')}-${String(baseDate.getDate()).padStart(2, '0')}`;
-    const sessions = getShardSessions(baseDate);
+    const sessions = getShardSessions(baseDate, shiftMinutes);
     if (!sessions) continue;
 
     for (const session of sessions) {

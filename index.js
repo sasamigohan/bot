@@ -497,44 +497,33 @@ function parseAnonPollEndTime(rawInput) {
     };
 }
 
-function parseEventDateTime(rawInput) {
+// イベントの開始・終了は「日付のみ」で指定する。
+// 時刻は Sky の更新時刻（サマータイム中 16:00 / 終了後 17:00、JST）で固定。
+function parseEventDate(rawInput, resetHour) {
     const input = String(rawInput || '').trim();
 
     if (!input) {
         return { ok: true, value: null };
     }
 
-    const match = input.match(
-        /^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})(?:[ T](\d{1,2}):(\d{2}))?$/
-    );
+    const match = input.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})$/);
 
     if (!match) {
         return {
             ok: false,
-            error: '日時は `2026-10-02` または `2026-10-02 16:00` の形式で指定してください。'
+            error:
+                '日付は `2026-10-02` の形式で指定してください。' +
+                '時刻は更新時刻（サマータイム中16:00／終了後17:00）に自動で設定されます。'
         };
     }
 
-    const [, y, mo, d, h, mi] = match;
-    const year = Number(y);
-    const month = Number(mo);
-    const day = Number(d);
-    const hour = h !== undefined ? Number(h) : 0;
-    const minute = mi !== undefined ? Number(mi) : 0;
+    const [, y, mo, d] = match.map(Number);
+    const date = new Date(Date.UTC(y, mo - 1, d, resetHour - 9, 0, 0));
+    const p = getJstParts(date);
 
-    if (
-        month < 1 || month > 12 ||
-        day < 1 || day > 31 ||
-        hour < 0 || hour > 23 ||
-        minute < 0 || minute > 59
-    ) {
-        return { ok: false, error: '日時の値が不正です。' };
-    }
-
-    const date = new Date(Date.UTC(year, month - 1, day, hour - 9, minute, 0));
-
-    if (Number.isNaN(date.getTime())) {
-        return { ok: false, error: '日時を読み取れませんでした。' };
+    // 2/31 のような存在しない日付を弾く
+    if (p.year !== y || p.month !== mo || p.day !== d) {
+        return { ok: false, error: '存在しない日付です。' };
     }
 
     return { ok: true, value: date.toISOString() };
@@ -1609,7 +1598,7 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('shard-time')
-        .setDescription('破片通知のサマータイム設定（管理者専用・省略時は現在の設定を表示）')
+        .setDescription('サマータイム設定（/summertime と同じ・管理者専用・省略時は現在の設定を表示）')
         .addStringOption(option =>
             option
                 .setName('mode')
@@ -1619,6 +1608,25 @@ const commands = [
                     { name: 'サマータイム中（16:00送信）', value: 'summer' },
                     { name: 'サマータイム終了後（17:00送信）', value: 'winter' }
                 )
+        ),
+
+    new SlashCommandBuilder()
+        .setName('summertime')
+        .setDescription('サマータイム（Skyの更新時刻 16:00/17:00）の開始・終了・確認')
+        .addSubcommand(sub =>
+            sub
+                .setName('start')
+                .setDescription('管理者専用：サマータイムを開始（更新時刻を16:00にする）')
+        )
+        .addSubcommand(sub =>
+            sub
+                .setName('end')
+                .setDescription('管理者専用：サマータイムを終了（更新時刻を17:00にする）')
+        )
+        .addSubcommand(sub =>
+            sub
+                .setName('status')
+                .setDescription('現在のサマータイム設定を確認')
         ),
 
     new SlashCommandBuilder()
@@ -1645,13 +1653,13 @@ const commands = [
         .addStringOption(option =>
             option
                 .setName('start')
-                .setDescription('開始日時。例: 2026-10-02 / 2026-10-02 16:00（省略時は開催中扱い）')
+                .setDescription('開始日。例: 2026-10-02（時刻は更新時刻に自動設定。省略時は開催中扱い）')
                 .setRequired(false)
         )
         .addStringOption(option =>
             option
                 .setName('end')
-                .setDescription('終了日時。例: 2026-10-02 / 2026-10-02 16:00（省略時は無期限）')
+                .setDescription('終了日。例: 2026-10-02（時刻は更新時刻に自動設定。省略時は無期限）')
                 .setRequired(false)
         ),
 
@@ -2810,10 +2818,13 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (interaction.commandName === 'shard-now') {
-        return handleShardNowCommand(interaction);
+        return handleShardNowCommand(interaction, data);
     }
 
-    if (interaction.commandName === 'shard-time') {
+    if (
+        interaction.commandName === 'shard-time' ||
+        interaction.commandName === 'summertime'
+    ) {
         return handleShardTimeCommand(interaction, data, saveData);
     }
 
@@ -4627,7 +4638,10 @@ if (
             });
         }
 
-        const parsedStart = parseEventDateTime(startInput);
+        // 時刻は更新時刻に固定（サマータイム中 16:00 / 終了後 17:00）
+        const resetHour = (data.shardData ? data.shardData.isSummerTime : true) ? 16 : 17;
+
+        const parsedStart = parseEventDate(startInput, resetHour);
 
         if (!parsedStart.ok) {
             return interaction.reply({
@@ -4636,7 +4650,7 @@ if (
             });
         }
 
-        const parsedEnd = parseEventDateTime(endInput);
+        const parsedEnd = parseEventDate(endInput, resetHour);
 
         if (!parsedEnd.ok) {
             return interaction.reply({
@@ -4652,7 +4666,7 @@ if (
                 new Date(parsedStart.value).getTime()
         ) {
             return interaction.reply({
-                content: '終了日時は開始日時より後にしてください。',
+                content: '終了日は開始日より後にしてください。',
                 ephemeral: true
             });
         }
@@ -4680,7 +4694,8 @@ if (
                 `種類: ${DAILY_EVENT_TYPE_LABELS[type]}\n` +
                 `名前: 「${name}」\n` +
                 `開始: ${parsedStart.value ? formatJstDateTime(parsedStart.value) : '設定なし（開催中扱い）'}\n` +
-                `終了: ${parsedEnd.value ? formatJstDateTime(parsedEnd.value) : '設定なし（無期限）'}`,
+                `終了: ${parsedEnd.value ? formatJstDateTime(parsedEnd.value) : '設定なし（無期限）'}\n` +
+                `※時刻は更新時刻（${resetHour}:00）に自動設定されます。サマータイムの開始・終了時は /summertime で自動調整されます。`,
             ephemeral: true
         });
     }

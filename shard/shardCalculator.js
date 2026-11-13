@@ -150,7 +150,7 @@ function formatTimeRange(baseDate, timeStr) {
  *   times: string[]|null   // formatTimeRange済みの文字列配列
  * }}
  */
-function getShardInfo(date = new Date()) {
+function getShardInfo(date = new Date(), shiftMinutes = 0) {
   const dayIndex = getDayIndex(date);
   const region = REGIONS[((dayIndex % REGIONS.length) + REGIONS.length) % REGIONS.length];
   const groupNum = GROUP_CYCLE[((dayIndex % GROUP_CYCLE.length) + GROUP_CYCLE.length) % GROUP_CYCLE.length];
@@ -162,7 +162,7 @@ function getShardInfo(date = new Date()) {
   }
 
   const placeInfo = group.places[region];
-  const times = group.times.map((t) => formatTimeRange(date, t));
+  const times = group.times.map((t) => formatTimeRange(date, shiftTimeRange(t, shiftMinutes)));
   const type = group.name.startsWith('黒') ? '黒' : '赤';
 
   return {
@@ -172,6 +172,16 @@ function getShardInfo(date = new Date()) {
     reward: placeInfo.reward,
     times,
   };
+}
+
+/**
+ * "HH:MM-HH:MM" の開始・終了を両方 shiftMinutes 分ずらす（サマータイム終了後は+60分）。
+ * 基準の時刻表はサマータイム中（JST）のもの。
+ */
+function shiftTimeRange(timeRange, shiftMinutes) {
+  if (!shiftMinutes) return timeRange;
+  const [startStr, endStr] = timeRange.split('-');
+  return `${addMinutesToTimeStr(startStr, shiftMinutes)}-${addMinutesToTimeStr(endStr, shiftMinutes)}`;
 }
 
 /**
@@ -205,7 +215,7 @@ function addMinutesToTimeStr(timeStr, minutesToAdd) {
  *   endIsNextDay: boolean,   // 終了がbaseDateの翌日かどうか
  * }> | null}  「なし」の日は null
  */
-function getShardSessions(date = new Date()) {
+function getShardSessions(date = new Date(), shiftMinutes = 0) {
   const dayIndex = getDayIndex(date);
   const groupNum = GROUP_CYCLE[((dayIndex % GROUP_CYCLE.length) + GROUP_CYCLE.length) % GROUP_CYCLE.length];
   const group = GROUPS[groupNum];
@@ -216,7 +226,7 @@ function getShardSessions(date = new Date()) {
   }
 
   return group.times.map((t, index) => {
-    const [startStr, endStr] = t.split('-');
+    const [startStr, endStr] = shiftTimeRange(t, shiftMinutes).split('-');
     const toMinutes = (s) => {
       const [h, m] = s.split(':').map(Number);
       return h * 60 + m;

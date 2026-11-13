@@ -5,10 +5,11 @@ const { getShardInfo } = require('./shardCalculator');
 /**
  * 「今日の破片」メッセージ文字列を生成する。
  * @param {Date} date
+ * @param {number} shiftMinutes 時刻のずらし量（サマータイム終了後は60）
  * @returns {string}
  */
-function buildShardMessage(date = new Date()) {
-  const info = getShardInfo(date);
+function buildShardMessage(date = new Date(), shiftMinutes = 0) {
+  const info = getShardInfo(date, shiftMinutes);
 
   if (info.type === 'なし') {
     return '【本日の破片】\n本日は破片イベントはありません';
